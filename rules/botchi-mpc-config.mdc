@@ -1,0 +1,120 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Botchi Discord Bot - Cursor MCP接続設定
+
+## 基本情報
+- **プロジェクト名**: Botchi Discord Bot
+- **バージョン**: v1.3.6
+- **最終更新日**: 2025年4月21日
+
+## GitHub MCP設定
+
+### 接続情報
+- **リポジトリURL**: https://github.com/botarhythm/botchi-discord-bot.git
+- **メインブランチ**: main
+- **コミットハッシュ**: 6875232aa66a8e9a15b3e263cf8f3282c5c4a99e
+- **PAT (Personal Access Token)**: [REDACTED]
+
+### 接続テスト
+```powershell
+set GITHUB_PERSONAL_ACCESS_TOKEN=[REDACTED]
+npx -y @modelcontextprotocol/server-github
+```
+
+### 接続問題の解決
+GitHub MCPサーバー接続で問題が発生した場合（特に角括弧問題）:
+```powershell
+set GITHUB_PERSONAL_ACCESS_TOKEN=[REDACTED]
+./fix-mcp-config.ps1
+```
+
+## Railway MCP設定
+
+### 接続情報
+- **Project ID**: fc1f7055-4259-4ab3-a455-7481cf981884
+- **Environment ID**: 11703836-4384-467b-815d-f99503f79f2d
+- **Service ID**: 0cda408a-9799-4586-a162-90b1056ced87
+- **API Token**: [REDACTED]
+- **公開URL**: botchi-discord-bot-production.up.railway.app
+
+### 接続テスト
+```powershell
+set RAILWAY_API_TOKEN=[REDACTED]
+npx -y @jasontanswe/railway-mcp
+```
+
+### 手動デプロイコマンド
+```powershell
+set RAILWAY_API_TOKEN=[REDACTED]
+railway up --service 0cda408a-9799-4586-a162-90b1056ced87
+```
+
+## Supabase MCP設定
+
+### 接続情報
+- **プロジェクトURL**: [非公開 - 環境変数から取得]
+- **API Key**: [非公開 - 環境変数から取得]
+- **サービスロール**: [非公開 - GitHub Secretsから取得]
+
+### ベクトルストア設定
+- **テーブル名**: embeddings
+- **類似度閾値**: 0.75
+- **最大結果数**: 5
+- **コンテキスト長**: 2000
+
+## ローカルCursorの設定
+
+### 推奨設定
+- **エディタフォント**: Fira Code または JetBrains Mono
+- **フォントサイズ**: 14px
+- **行の高さ**: 1.5
+- **シンタックスハイライト**: 有効
+- **ミニマップ**: 有効
+
+### キーボードショートカット
+- **コード補完**: Ctrl+Space
+- **行の複製**: Shift+Alt+↓
+- **行の削除**: Ctrl+Shift+K
+- **コマンドパレット**: Ctrl+Shift+P
+- **ファイル検索**: Ctrl+P
+
+## CI/CD連携設定
+
+### GitHub Actions
+- **ワークフローファイル**: .github/workflows/deploy.yml
+- **トリガー**: push to main, pull request, manual
+- **テスト環境変数**: GitHub Secretsから取得
+- **デプロイ通知**: Discordウェブフック
+
+### Railway連携
+- **自動デプロイ**: GitHubとの連携で有効
+- **ヘルスチェック**: /health エンドポイント
+- **再起動ポリシー**: 失敗時のみ再起動
+- **最大再試行回数**: 10
+
+## トラブルシューティング
+
+### GitHub MCP問題
+1. PAT期限切れをチェック
+2. fix-mcp-config.ps1を実行
+3. GitHub Accountの連携状態確認
+
+### Railway MCP問題
+1. APIトークンの有効性確認
+2. `update-railway.bat`を実行
+3. Railway CLI直接実行でのテスト
+
+### 環境変数同期問題
+1. `ENVIRONMENT_SYNC.md`を参照
+2. 手動で同期を確認
+3. 「同期手順クイックリファレンス」に従う
+
+## メンテナンス予定
+
+- **毎週**: Supabaseバックアップ（自動）
+- **月次**: 環境変数の同期確認
+- **四半期**: APIキーのローテーション
+- **半年**: PAT再発行

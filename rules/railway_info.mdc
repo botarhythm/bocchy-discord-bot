@@ -1,0 +1,17 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Railway プロジェクト情報
+
+以下は、このプロジェクトをRailwayにデプロイ・管理する際に使用する情報です。
+
+- **Project Name:** `botchi-discord-bot`
+- **Project ID:** `fc1f7055-4259-4ab3-a455-7481cf981884`
+- **Environment Name:** `production`
+- **Environment ID:** `11703836-4384-467b-815d-f99503f79f2d`
+- **Service Name:** `botchi-discord-bot` (ボット本体)
+- **Service ID:** `0cda408a-9799-4586-a162-90b1056ced87`
+
+これらのIDは、デプロイメントログの確認、環境変数の設定、サービスの再起動などの操作を行う際に使用します。 
