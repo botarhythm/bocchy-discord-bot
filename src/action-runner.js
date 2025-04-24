@@ -88,6 +88,17 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null) 
     guildRecent = (ghist?.messages ?? []).slice(-2); // 直近2往復だけ
   }
 
+  // --- 追加: 取得状況を詳細デバッグ出力 ---
+  console.log('[DEBUG:buildHistoryContext]', {
+    userId,
+    channelId,
+    guildId,
+    recent,
+    sum: sum?.summary,
+    guildSummary,
+    guildRecent
+  });
+
   // 4) OpenAI messages 形式に変換
   const msgs = [];
   if (guildSummary) msgs.push({ role: 'system', content: `【サーバー全体要約】${guildSummary}` });
