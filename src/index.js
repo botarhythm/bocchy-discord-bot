@@ -142,14 +142,21 @@ client.on("messageCreate", async (message) => {
       history.push(message);
       if (history.length > 30) history.shift();
       const excitementScore = await getExcitementScoreByAI(history);
+      console.log(`[自然介入デバッグ] チャンネルID: ${channelId}, 盛り上がりスコア: ${excitementScore}`);
       const now = Date.now();
       const last = interventionCooldowns.get(channelId) || 0;
       const cooldownMs = getCooldownMsByAI(excitementScore);
-      if (now - last < cooldownMs) return;
+      if (now - last < cooldownMs) {
+        console.log(`[自然介入デバッグ] クールダウン中: 残り${((cooldownMs - (now - last))/1000).toFixed(1)}秒`);
+        return;
+      }
       if (excitementScore >= 7) {
         const intervention = await generateInterventionMessage(history);
+        console.log(`[自然介入デバッグ] 介入メッセージ送信: ${intervention}`);
         await message.channel.send(intervention);
         interventionCooldowns.set(channelId, now);
+      } else {
+        console.log(`[自然介入デバッグ] 介入せず（スコア${excitementScore} < 7）`);
       }
     }
     // --- DMまたは通常処理 ---
