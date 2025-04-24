@@ -44,9 +44,9 @@ const SHORT_TURNS   = 4;   // ← 直近 4 往復だけ詳細
 const MAX_ARTICLES  = 3;
 
 // ---------- A.  summary を取ってシステムに渡すヘルパ ----------
-async function buildHistoryContext(supabase, userId, channelId) {
+async function buildHistoryContext(supabase, userId, channelId, guildId = null) {
   if (!supabase) return [];
-  // 1) 直近詳細 n＝SHORT_TURNS
+  // 1) 直近詳細 n＝SHORT_TURNS（チャンネル単位）
   const { data: hist } = await supabase
     .from('conversation_histories')
     .select('messages')
@@ -55,7 +55,7 @@ async function buildHistoryContext(supabase, userId, channelId) {
     .maybeSingle();
   const recent = (hist?.messages ?? []).slice(-SHORT_TURNS);
 
-  // 2) それ以前は「150 字要約」1 件だけ
+  // 2) それ以前は「150 字要約」1 件だけ（チャンネル単位）
   const { data: sum } = await supabase
     .from('conversation_summaries')
     .select('summary')
@@ -65,8 +65,36 @@ async function buildHistoryContext(supabase, userId, channelId) {
     .limit(1)
     .maybeSingle();
 
-  // 3) OpenAI messages 形式に変換
+  // 3) サーバー全体の要約・履歴も取得
+  let guildSummary = null;
+  let guildRecent = [];
+  if (guildId) {
+    const { data: gsum } = await supabase
+      .from('conversation_summaries')
+      .select('summary')
+      .eq('guild_id', guildId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    guildSummary = gsum?.summary;
+
+    const { data: ghist } = await supabase
+      .from('conversation_histories')
+      .select('messages')
+      .eq('guild_id', guildId)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    guildRecent = (ghist?.messages ?? []).slice(-2); // 直近2往復だけ
+  }
+
+  // 4) OpenAI messages 形式に変換
   const msgs = [];
+  if (guildSummary) msgs.push({ role: 'system', content: `【サーバー全体要約】${guildSummary}` });
+  guildRecent.forEach(t => {
+    msgs.push({ role: 'user', content: t.user });
+    msgs.push({ role: 'assistant', content: t.bot });
+  });
   if (sum?.summary) {
     msgs.push({ role: 'system', content: `【要約】${sum.summary}` });
   }
@@ -215,7 +243,8 @@ export async function runPipeline(action, { message, flags, supabase }) {
       return;
     } else if (action === "llm_only") {
       const userPrompt = message.content.replace(/<@!?\\d+>/g, "").trim();
-      let historyMsgs = await buildHistoryContext(supabase, message.author.id, channelKey);
+      let guildId = message.guild ? message.guild.id : null;
+      let historyMsgs = await buildHistoryContext(supabase, message.author.id, channelKey, guildId);
       let reply;
       if (isFeatureQuestion(userPrompt)) {
         const bocchyConfig = yaml.load(fs.readFileSync('bocchy-character.yaml', 'utf8'));
@@ -244,6 +273,8 @@ export async function runPipeline(action, { message, flags, supabase }) {
 // 📝 おしゃべりの記録をそっと保存するよ（たくさんなら森の記憶にまとめるね）
 async function saveHistory(supabase, message, userPrompt, botReply) {
   const channelId = message.guild ? message.channel.id : 'DM';
+  const guildId = message.guild ? message.guild.id : null;
+  // 1. チャンネル単位の保存（従来通り）
   const { data } = await supabase
     .from('conversation_histories')
     .select('id, messages')
@@ -269,6 +300,7 @@ async function saveHistory(supabase, message, userPrompt, botReply) {
       .insert({
         user_id: message.author.id,
         channel_id: channelId,
+        guild_id: guildId,
         summary,
         created_at: new Date().toISOString()
       });
@@ -287,9 +319,65 @@ async function saveHistory(supabase, message, userPrompt, botReply) {
       .insert({
         user_id: message.author.id,
         channel_id: channelId,
+        guild_id: guildId,
         messages,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       });
+  }
+
+  // 2. サーバー全体（guild_id単位）でも保存
+  if (guildId) {
+    // 履歴
+    const { data: gdata } = await supabase
+      .from('conversation_histories')
+      .select('id, messages')
+      .eq('guild_id', guildId)
+      .is('channel_id', null)
+      .maybeSingle();
+    let gmessages = gdata?.messages || [];
+    gmessages.push({ user: userPrompt, bot: botReply, ts: new Date().toISOString() });
+    if (gdata?.id) {
+      await supabase
+        .from('conversation_histories')
+        .update({ messages: gmessages, updated_at: new Date().toISOString() })
+        .eq('id', gdata.id);
+    } else {
+      await supabase
+        .from('conversation_histories')
+        .insert({
+          guild_id: guildId,
+          channel_id: null,
+          messages: gmessages,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        });
+    }
+    // サマリー
+    if (gmessages.length >= SUMMARY_AT) {
+      const gsummaryPrompt = gmessages
+        .map(m => `ユーザー: ${m.user}\nBot: ${m.bot}`)
+        .join('\n');
+      const gsummary = await llmRespond(
+        gsummaryPrompt,
+        "あなたはアーカイブ要約AIです。上の対話を150文字以内で日本語要約し、重要語に 🔑 を付けてください。",
+        message,
+        []
+      );
+      await supabase
+        .from('conversation_summaries')
+        .insert({
+          guild_id: guildId,
+          channel_id: null,
+          summary: gsummary,
+          created_at: new Date().toISOString()
+        });
+      gmessages = gmessages.slice(-LONG_WINDOW);
+      await supabase
+        .from('conversation_histories')
+        .update({ messages: gmessages, updated_at: new Date().toISOString() })
+        .eq('guild_id', guildId)
+        .is('channel_id', null);
+    }
   }
 } 

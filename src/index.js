@@ -111,24 +111,59 @@ function isExplicitMention(message) {
   return false;
 }
 
-client.on("messageCreate", async (message) => {
-  console.debug('[messageCreate] メッセージ受信:', message.content);
-  if (message.author.bot) return;
+// --- AI盛り上がり判定＋動的クールダウン ---
+const channelHistories = new Map();
+const interventionCooldowns = new Map();
 
-  const flags = detectFlags(message, client);
-  const action = pickAction(flags);
-  console.log("flags:", flags, "action:", action);
-  if (action === "llm_only") {
-    if (!isExplicitMention(message) && !shouldIntervene(message)) {
-      logMetric('intervention_per_msg', 0);
-      return;
-    }
-    logMetric('intervention_per_msg', 1);
-  }
-  if (action) {
-    await runPipeline(action, { message, flags, supabase });
-    return;
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+  const channelId = message.channel.id;
+  if (!channelHistories.has(channelId)) channelHistories.set(channelId, []);
+  const history = channelHistories.get(channelId);
+  history.push(message);
+  if (history.length > 30) history.shift();
+
+  // AIで盛り上がり度を判定
+  const excitementScore = await getExcitementScoreByAI(history);
+
+  // スコアに応じてクールダウン
+  const now = Date.now();
+  const last = interventionCooldowns.get(channelId) || 0;
+  const cooldownMs = getCooldownMsByAI(excitementScore);
+  if (now - last < cooldownMs) return;
+
+  // 盛り上がり度が高いときだけ介入
+  if (excitementScore >= 7) {
+    const intervention = await generateInterventionMessage(history);
+    await message.channel.send(intervention);
+    interventionCooldowns.set(channelId, now);
   }
 });
+
+async function getExcitementScoreByAI(history) {
+  const prompt = `\n以下はDiscordチャンネルの直近の会話履歴です。\nこの会話が「どれくらい盛り上がっているか」を1〜10のスコアで評価してください。\n10: 非常に盛り上がっている（多人数・活発・感情的・話題性あり）\n1: ほぼ盛り上がっていない（静か・単調・反応が薄い）\nスコアのみを半角数字で返してください。\n---\n${history.slice(-20).map(m => m.author.username + ": " + m.content).join("\n")}\n---\n`;
+  const res = await openai.chat.completions.create({
+    model: "gpt-4o-mini-2024-07-18",
+    messages: [{ role: "system", content: prompt }]
+  });
+  const score = parseInt(res.choices[0].message.content.match(/\d+/)?.[0] || "1", 10);
+  return Math.max(1, Math.min(10, score));
+}
+
+function getCooldownMsByAI(score) {
+  if (score >= 9) return 20 * 1000;
+  if (score >= 7) return 60 * 1000;
+  if (score >= 5) return 2 * 60 * 1000;
+  return 5 * 60 * 1000;
+}
+
+async function generateInterventionMessage(history) {
+  const prompt = `\n以下の会話の流れを踏まえ、ボットが自然に会話へ参加する一言を日本語で生成してください。\n---\n${history.slice(-10).map(m => m.author.username + ": " + m.content).join("\n")}\n---\n`;
+  const res = await openai.chat.completions.create({
+    model: "gpt-4o-mini-2024-07-18",
+    messages: [{ role: "system", content: prompt }]
+  });
+  return res.choices[0].message.content.trim();
+}
 
 client.login(process.env.DISCORD_TOKEN);
