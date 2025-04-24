@@ -161,14 +161,13 @@ client.on("messageCreate", async (message) => {
       // DM時はrunPipelineの前後でcatch不可エラーも含めtry-catch
       try {
         await runPipeline(action, { message, flags, supabase });
-        // DM応答の末尾にデバッグ情報を送信
-        const debugMsg = `\n\n【デバッグ情報】\n時刻: ${debugInfo.timestamp}\nユーザーID: ${debugInfo.userId}\nユーザー名: ${debugInfo.username}\nアクション: ${debugInfo.action}\nフラグ: ${JSON.stringify(debugInfo.flags)}\nSupabase: ${debugInfo.supabase}\nOpenAIキー: ${debugInfo.openaiKey}`;
-        await message.reply(debugMsg);
+        // DM応答の末尾にデバッグ情報を送信しない（console.logのみに出力）
+        console.log('[DMデバッグ情報]', debugInfo);
       } catch (err) {
         debugInfo.error = err?.stack || err?.message || String(err);
-        const errMsg = `エラーが発生しました。\n【デバッグ情報】\n時刻: ${debugInfo.timestamp}\nユーザーID: ${debugInfo.userId}\nユーザー名: ${debugInfo.username}\nアクション: ${debugInfo.action}\nフラグ: ${JSON.stringify(debugInfo.flags)}\nSupabase: ${debugInfo.supabase}\nOpenAIキー: ${debugInfo.openaiKey}\nエラー内容: ${debugInfo.error}`;
-        await message.reply(errMsg);
-        console.error('DM自動デバッグエラー:', debugInfo);
+        // エラー時もDMにはデバッグ情報を送信せず、console.errorのみに出力
+        console.error('[DM自動デバッグエラー]', debugInfo);
+        await message.reply('エラーが発生しました。管理者にご連絡ください。');
       }
       return;
     }
