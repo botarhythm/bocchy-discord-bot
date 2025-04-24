@@ -355,74 +355,91 @@ async function saveHistory(supabase, message, userPrompt, botReply) {
 
   // 2. サーバー全体（guild_id単位）でも保存
   if (guildId) {
-    // 履歴
-    const { data: gdata } = await supabase
-      .from('conversation_histories')
-      .select('id, messages')
-      .eq('guild_id', guildId)
-      .is('channel_id', null)
-      .maybeSingle();
-    let gmessages = gdata?.messages || [];
-    gmessages.push({ user: userPrompt, bot: botReply, ts: new Date().toISOString() });
-    // --- 追加: 保存前のサーバー全体履歴デバッグ ---
-    console.log('[DEBUG:saveHistory][before guild save]', {
-      guildId,
-      gdata,
-      gmessagesCount: gmessages.length
-    });
-    if (gdata?.id) {
-      await supabase
+    try {
+      // 履歴
+      const { data: gdata, error: gdataErr } = await supabase
         .from('conversation_histories')
-        .update({ messages: gmessages, updated_at: new Date().toISOString() })
-        .eq('id', gdata.id);
-    } else {
-      await supabase
-        .from('conversation_histories')
-        .insert({
-          guild_id: guildId,
-          channel_id: null,
-          messages: gmessages,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        });
-    }
-    // --- 追加: 保存後のサーバー全体履歴デバッグ ---
-    const { data: gdataAfter } = await supabase
-      .from('conversation_histories')
-      .select('id, messages')
-      .eq('guild_id', guildId)
-      .is('channel_id', null)
-      .maybeSingle();
-    console.log('[DEBUG:saveHistory][after guild save]', {
-      guildId,
-      gdataAfter,
-      gmessagesCount: gdataAfter?.messages?.length
-    });
-    // サマリー
-    if (gmessages.length >= SUMMARY_AT) {
-      const gsummaryPrompt = gmessages
-        .map(m => `ユーザー: ${m.user}\nBot: ${m.bot}`)
-        .join('\n');
-      const gsummary = await llmRespond(
-        gsummaryPrompt,
-        "あなたはアーカイブ要約AIです。上の対話を150文字以内で日本語要約し、重要語に 🔑 を付けてください。",
-        message,
-        []
-      );
-      await supabase
-        .from('conversation_summaries')
-        .insert({
-          guild_id: guildId,
-          channel_id: null,
-          summary: gsummary,
-          created_at: new Date().toISOString()
-        });
-      gmessages = gmessages.slice(-LONG_WINDOW);
-      await supabase
-        .from('conversation_histories')
-        .update({ messages: gmessages, updated_at: new Date().toISOString() })
+        .select('id, messages')
         .eq('guild_id', guildId)
-        .is('channel_id', null);
+        .is('channel_id', null)
+        .maybeSingle();
+      let gmessages = gdata?.messages || [];
+      gmessages.push({ user: userPrompt, bot: botReply, ts: new Date().toISOString() });
+      // --- 追加: 保存前のサーバー全体履歴デバッグ ---
+      console.log('[DEBUG:saveHistory][before guild save]', {
+        guildId,
+        gdata,
+        gdataErr,
+        gmessagesCount: gmessages.length,
+        gmessagesPreview: gmessages.slice(-3),
+      });
+      let writeResult = null;
+      if (gdata?.id) {
+        writeResult = await supabase
+          .from('conversation_histories')
+          .update({ messages: gmessages, updated_at: new Date().toISOString() })
+          .eq('id', gdata.id);
+      } else {
+        writeResult = await supabase
+          .from('conversation_histories')
+          .insert({
+            guild_id: guildId,
+            channel_id: null,
+            messages: gmessages,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+      }
+      // --- 追加: 書き込みレスポンスデバッグ ---
+      console.log('[DEBUG:saveHistory][guild save writeResult]', {
+        guildId,
+        writeResult,
+      });
+      // --- 追加: 保存後のサーバー全体履歴デバッグ ---
+      const { data: gdataAfter, error: gdataAfterErr } = await supabase
+        .from('conversation_histories')
+        .select('id, messages')
+        .eq('guild_id', guildId)
+        .is('channel_id', null)
+        .maybeSingle();
+      console.log('[DEBUG:saveHistory][after guild save]', {
+        guildId,
+        gdataAfter,
+        gdataAfterErr,
+        gmessagesCount: gdataAfter?.messages?.length,
+        gmessagesPreview: gdataAfter?.messages?.slice(-3),
+      });
+      // サマリー
+      if (gmessages.length >= SUMMARY_AT) {
+        const gsummaryPrompt = gmessages
+          .map(m => `ユーザー: ${m.user}\nBot: ${m.bot}`)
+          .join('\n');
+        const gsummary = await llmRespond(
+          gsummaryPrompt,
+          "あなたはアーカイブ要約AIです。上の対話を150文字以内で日本語要約し、重要語に 🔑 を付けてください。",
+          message,
+          []
+        );
+        await supabase
+          .from('conversation_summaries')
+          .insert({
+            guild_id: guildId,
+            channel_id: null,
+            summary: gsummary,
+            created_at: new Date().toISOString()
+          });
+        gmessages = gmessages.slice(-LONG_WINDOW);
+        await supabase
+          .from('conversation_histories')
+          .update({ messages: gmessages, updated_at: new Date().toISOString() })
+          .eq('guild_id', guildId)
+          .is('channel_id', null);
+      }
+    } catch (guildSaveErr) {
+      console.error('[DEBUG:saveHistory][guild save ERROR]', {
+        guildId,
+        guildSaveErr,
+      });
     }
   }
 } 
