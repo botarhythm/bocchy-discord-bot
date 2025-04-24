@@ -119,7 +119,6 @@ const interventionCooldowns = new Map();
 client.on("messageCreate", async (message) => {
   console.log(`[messageCreate] メッセージ受信: ${message.content}`);
   if (message.author.bot) return;
-  // --- DM自動デバッグ ---
   const isDM = !message.guild;
   let debugInfo = {
     timestamp: new Date().toISOString(),
@@ -134,7 +133,25 @@ client.on("messageCreate", async (message) => {
     error: null
   };
   try {
-    // 既存の盛り上がり判定（サーバーのみ）
+    // --- サーバーチャンネルの強制介入判定 ---
+    if (!isDM) {
+      if (shouldIntervene(message)) {
+        console.log(`[強制介入デバッグ] shouldIntervene=true: メッセージ: ${message.content}`);
+        const flags = detectFlags(message, client);
+        debugInfo.flags = flags;
+        const action = pickAction(flags);
+        debugInfo.action = action;
+        try {
+          await runPipeline(action, { message, flags, supabase });
+          console.log('[強制介入デバッグ] runPipeline実行: action=', action, 'flags=', flags);
+        } catch (err) {
+          debugInfo.error = err?.stack || err?.message || String(err);
+          console.error('[強制介入デバッグ] runPipelineエラー:', debugInfo);
+        }
+        return;
+      }
+    }
+    // --- 既存の盛り上がり判定（自然介入） ---
     if (!isDM) {
       const channelId = message.channel.id;
       if (!channelHistories.has(channelId)) channelHistories.set(channelId, []);
@@ -158,6 +175,7 @@ client.on("messageCreate", async (message) => {
       } else {
         console.log(`[自然介入デバッグ] 介入せず（スコア${excitementScore} < 7）`);
       }
+      return;
     }
     // --- DMまたは通常処理 ---
     const flags = detectFlags(message, client);
@@ -165,25 +183,20 @@ client.on("messageCreate", async (message) => {
     const action = pickAction(flags);
     debugInfo.action = action;
     if (isDM) {
-      // DM時はrunPipelineの前後でcatch不可エラーも含めtry-catch
       try {
         await runPipeline(action, { message, flags, supabase });
-        // DM応答の末尾にデバッグ情報を送信しない（console.logのみに出力）
         console.log('[DMデバッグ情報]', debugInfo);
       } catch (err) {
         debugInfo.error = err?.stack || err?.message || String(err);
-        // エラー時もDMにはデバッグ情報を送信せず、console.errorのみに出力
         console.error('[DM自動デバッグエラー]', debugInfo);
         await message.reply('エラーが発生しました。管理者にご連絡ください。');
       }
       return;
     }
-    // サーバー通常メッセージは既存のrunPipeline呼び出し（省略）
   } catch (e) {
     debugInfo.error = e?.stack || e?.message || String(e);
     if (isDM) {
-      const errMsg = `エラーが発生しました。\n【デバッグ情報】\n時刻: ${debugInfo.timestamp}\nユーザーID: ${debugInfo.userId}\nユーザー名: ${debugInfo.username}\nアクション: ${debugInfo.action}\nフラグ: ${JSON.stringify(debugInfo.flags)}\nSupabase: ${debugInfo.supabase}\nOpenAIキー: ${debugInfo.openaiKey}\nエラー内容: ${debugInfo.error}`;
-      await message.reply(errMsg);
+      await message.reply('エラーが発生しました。管理者にご連絡ください。');
     }
     console.error('自動デバッグ全体エラー:', debugInfo);
   }
