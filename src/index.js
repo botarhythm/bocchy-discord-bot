@@ -20,7 +20,8 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildMembers
   ],
   partials: [Partials.Channel]
 });
@@ -116,6 +117,7 @@ const channelHistories = new Map();
 const interventionCooldowns = new Map();
 
 client.on("messageCreate", async (message) => {
+  console.log(`[messageCreate] メッセージ受信: ${message.content}`);
   if (message.author.bot) return;
   const channelId = message.channel.id;
   if (!channelHistories.has(channelId)) channelHistories.set(channelId, []);

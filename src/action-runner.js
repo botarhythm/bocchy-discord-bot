@@ -247,11 +247,17 @@ export async function runPipeline(action, { message, flags, supabase }) {
       let guildId = null;
       if (message.guild) {
         guildId = message.guild.id;
-      } else if (message.client && message.client.guilds && message.client.guilds.cache && message.client.guilds.cache.size > 0) {
-        // ユーザーが所属する最初のサーバーIDを利用（複数サーバー対応は要件次第で拡張可）
-        const guilds = message.client.guilds.cache.filter(g => g.members.cache.has(message.author.id));
-        if (guilds.size > 0) {
-          guildId = guilds.first().id;
+      } else if (message.client && message.client.guilds && message.client.guilds.cache) {
+        for (const [id, guild] of message.client.guilds.cache) {
+          try {
+            await guild.members.fetch(message.author.id); // キャッシュを確実に取得
+            if (guild.members.cache.has(message.author.id)) {
+              guildId = id;
+              break;
+            }
+          } catch (e) {
+            // エラーは無視
+          }
         }
       }
       let historyMsgs = await buildHistoryContext(supabase, message.author.id, channelKey, guildId);
