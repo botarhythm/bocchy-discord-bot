@@ -1,0 +1,29 @@
+flags:
+  search:
+    patterns:
+      - regex: "\\?\\?\\s+(.+)"
+      - regex: "(?:検索|search)\\s+(.+)"
+    weight: 10
+  intervention:
+    triggers:
+      - mention: true
+      - channel_type: public
+    weight: 5
+
+decision_matrix:
+  - when: ["search", "intervention"]
+    action: combined
+  - when: ["search"]
+    action: search_only
+  - when: ["intervention"]
+    action: llm_only
+
+actions:
+  combined:
+    steps:
+      - search.google
+      - llm.respond
+  search_only:
+    steps: [search.google]
+  llm_only:
+    steps: [llm.respond] 
