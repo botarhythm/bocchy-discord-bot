@@ -119,26 +119,67 @@ const interventionCooldowns = new Map();
 client.on("messageCreate", async (message) => {
   console.log(`[messageCreate] メッセージ受信: ${message.content}`);
   if (message.author.bot) return;
-  const channelId = message.channel.id;
-  if (!channelHistories.has(channelId)) channelHistories.set(channelId, []);
-  const history = channelHistories.get(channelId);
-  history.push(message);
-  if (history.length > 30) history.shift();
-
-  // AIで盛り上がり度を判定
-  const excitementScore = await getExcitementScoreByAI(history);
-
-  // スコアに応じてクールダウン
-  const now = Date.now();
-  const last = interventionCooldowns.get(channelId) || 0;
-  const cooldownMs = getCooldownMsByAI(excitementScore);
-  if (now - last < cooldownMs) return;
-
-  // 盛り上がり度が高いときだけ介入
-  if (excitementScore >= 7) {
-    const intervention = await generateInterventionMessage(history);
-    await message.channel.send(intervention);
-    interventionCooldowns.set(channelId, now);
+  // --- DM自動デバッグ ---
+  const isDM = !message.guild;
+  let debugInfo = {
+    timestamp: new Date().toISOString(),
+    userId: message.author.id,
+    username: message.author.username,
+    isDM,
+    content: message.content,
+    supabase: !!supabase,
+    openaiKey: !!process.env.OPENAI_API_KEY,
+    action: null,
+    flags: null,
+    error: null
+  };
+  try {
+    // 既存の盛り上がり判定（サーバーのみ）
+    if (!isDM) {
+      const channelId = message.channel.id;
+      if (!channelHistories.has(channelId)) channelHistories.set(channelId, []);
+      const history = channelHistories.get(channelId);
+      history.push(message);
+      if (history.length > 30) history.shift();
+      const excitementScore = await getExcitementScoreByAI(history);
+      const now = Date.now();
+      const last = interventionCooldowns.get(channelId) || 0;
+      const cooldownMs = getCooldownMsByAI(excitementScore);
+      if (now - last < cooldownMs) return;
+      if (excitementScore >= 7) {
+        const intervention = await generateInterventionMessage(history);
+        await message.channel.send(intervention);
+        interventionCooldowns.set(channelId, now);
+      }
+    }
+    // --- DMまたは通常処理 ---
+    const flags = detectFlags(message, client);
+    debugInfo.flags = flags;
+    const action = pickAction(flags);
+    debugInfo.action = action;
+    if (isDM) {
+      // DM時はrunPipelineの前後でcatch不可エラーも含めtry-catch
+      try {
+        await runPipeline(action, { message, flags, supabase });
+        // DM応答の末尾にデバッグ情報を送信
+        const debugMsg = `\n\n【デバッグ情報】\n時刻: ${debugInfo.timestamp}\nユーザーID: ${debugInfo.userId}\nユーザー名: ${debugInfo.username}\nアクション: ${debugInfo.action}\nフラグ: ${JSON.stringify(debugInfo.flags)}\nSupabase: ${debugInfo.supabase}\nOpenAIキー: ${debugInfo.openaiKey}`;
+        await message.reply(debugMsg);
+      } catch (err) {
+        debugInfo.error = err?.stack || err?.message || String(err);
+        const errMsg = `エラーが発生しました。\n【デバッグ情報】\n時刻: ${debugInfo.timestamp}\nユーザーID: ${debugInfo.userId}\nユーザー名: ${debugInfo.username}\nアクション: ${debugInfo.action}\nフラグ: ${JSON.stringify(debugInfo.flags)}\nSupabase: ${debugInfo.supabase}\nOpenAIキー: ${debugInfo.openaiKey}\nエラー内容: ${debugInfo.error}`;
+        await message.reply(errMsg);
+        console.error('DM自動デバッグエラー:', debugInfo);
+      }
+      return;
+    }
+    // サーバー通常メッセージは既存のrunPipeline呼び出し（省略）
+  } catch (e) {
+    debugInfo.error = e?.stack || e?.message || String(e);
+    if (isDM) {
+      const errMsg = `エラーが発生しました。\n【デバッグ情報】\n時刻: ${debugInfo.timestamp}\nユーザーID: ${debugInfo.userId}\nユーザー名: ${debugInfo.username}\nアクション: ${debugInfo.action}\nフラグ: ${JSON.stringify(debugInfo.flags)}\nSupabase: ${debugInfo.supabase}\nOpenAIキー: ${debugInfo.openaiKey}\nエラー内容: ${debugInfo.error}`;
+      await message.reply(errMsg);
+    }
+    console.error('自動デバッグ全体エラー:', debugInfo);
   }
 });
 
