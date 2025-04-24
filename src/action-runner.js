@@ -243,7 +243,17 @@ export async function runPipeline(action, { message, flags, supabase }) {
       return;
     } else if (action === "llm_only") {
       const userPrompt = message.content.replace(/<@!?\\d+>/g, "").trim();
-      let guildId = message.guild ? message.guild.id : null;
+      // DMでもサーバー全体の知識を活用するため、ユーザーが所属するサーバーIDを取得する
+      let guildId = null;
+      if (message.guild) {
+        guildId = message.guild.id;
+      } else if (message.client && message.client.guilds && message.client.guilds.cache && message.client.guilds.cache.size > 0) {
+        // ユーザーが所属する最初のサーバーIDを利用（複数サーバー対応は要件次第で拡張可）
+        const guilds = message.client.guilds.cache.filter(g => g.members.cache.has(message.author.id));
+        if (guilds.size > 0) {
+          guildId = guilds.first().id;
+        }
+      }
       let historyMsgs = await buildHistoryContext(supabase, message.author.id, channelKey, guildId);
       let reply;
       if (isFeatureQuestion(userPrompt)) {
