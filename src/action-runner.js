@@ -364,6 +364,12 @@ async function saveHistory(supabase, message, userPrompt, botReply) {
       .maybeSingle();
     let gmessages = gdata?.messages || [];
     gmessages.push({ user: userPrompt, bot: botReply, ts: new Date().toISOString() });
+    // --- 追加: 保存前のサーバー全体履歴デバッグ ---
+    console.log('[DEBUG:saveHistory][before guild save]', {
+      guildId,
+      gdata,
+      gmessagesCount: gmessages.length
+    });
     if (gdata?.id) {
       await supabase
         .from('conversation_histories')
@@ -380,6 +386,18 @@ async function saveHistory(supabase, message, userPrompt, botReply) {
           updated_at: new Date().toISOString()
         });
     }
+    // --- 追加: 保存後のサーバー全体履歴デバッグ ---
+    const { data: gdataAfter } = await supabase
+      .from('conversation_histories')
+      .select('id, messages')
+      .eq('guild_id', guildId)
+      .is('channel_id', null)
+      .maybeSingle();
+    console.log('[DEBUG:saveHistory][after guild save]', {
+      guildId,
+      gdataAfter,
+      gmessagesCount: gdataAfter?.messages?.length
+    });
     // サマリー
     if (gmessages.length >= SUMMARY_AT) {
       const gsummaryPrompt = gmessages
