@@ -117,7 +117,8 @@ const channelHistories = new Map();
 const interventionCooldowns = new Map();
 
 client.on("messageCreate", async (message) => {
-  console.log(`[messageCreate] メッセージ受信: ${message.content}`);
+  // --- 追加: 受信メッセージの詳細デバッグログ ---
+  console.log('[DEBUG:messageCreate] content:', message.content, '\n  channelId:', message.channel?.id, '\n  guildId:', message.guild?.id, '\n  channelType:', message.channel?.type, '\n  username:', message.author?.username, '\n  isDM:', !message.guild, '\n  message.guild:', message.guild, '\n  message.channel.type:', message.channel?.type);
   if (message.author.bot) return;
   const isDM = !message.guild;
   let debugInfo = {
