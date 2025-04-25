@@ -525,4 +525,21 @@ export async function shouldContextuallyIntervene(messages) {
     return context.介入例;
   }
   return null;
+}
+
+/**
+ * 直近の会話履歴と前回介入メッセージから「話題が継続しているか」をAIで判定
+ * @param {string} lastIntervention - 前回介入メッセージ
+ * @param {Array} messages - 履歴（Supabase形式）
+ * @returns {boolean} 継続していればtrue
+ */
+export async function isTopicContinued(lastIntervention, messages) {
+  const historyText = buildHistoryText(messages, 10);
+  const prompt = `以下はDiscordチャンネルの直近の会話履歴です。\n直前のボットの介入メッセージ:\n${lastIntervention}\nこのメッセージと同じ話題が継続していますか？「はい」または「いいえ」で答え、理由も簡単に述べてください。\n履歴:\n${historyText}`;
+  const res = await openai.chat.completions.create({
+    model: "gpt-4o-mini-2024-07-18",
+    messages: [{role: "system", content: prompt}]
+  });
+  const content = res.choices[0].message.content.trim();
+  return content.startsWith("はい");
 } 
