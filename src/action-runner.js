@@ -260,6 +260,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
       if (message.guild) {
         guildId = message.guild.id;
       } else if (message.client && message.client.guilds && message.client.guilds.cache) {
+        // --- 追加: ユーザーが所属するサーバーIDを1つ取得（DM時） ---
         for (const [id, guild] of message.client.guilds.cache) {
           try {
             await guild.members.fetch(message.author.id); // キャッシュを確実に取得
