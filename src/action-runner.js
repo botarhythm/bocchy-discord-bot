@@ -260,18 +260,25 @@ export async function runPipeline(action, { message, flags, supabase }) {
       if (message.guild) {
         guildId = message.guild.id;
       } else if (message.client && message.client.guilds && message.client.guilds.cache) {
-        // --- 追加: ユーザーが所属するサーバーIDを1つ取得（DM時） ---
+        // --- デバッグ強化: ユーザーが所属するサーバーIDを1つ取得（DM時） ---
+        console.log('[DEBUG:runPipeline][guildId取得] guilds.cache:', message.client.guilds.cache.map ? message.client.guilds.cache.map(g=>g.id) : message.client.guilds.cache);
         for (const [id, guild] of message.client.guilds.cache) {
           try {
+            console.log('[DEBUG:runPipeline][guildId取得] チェック中guild:', id);
             await guild.members.fetch(message.author.id); // キャッシュを確実に取得
-            if (guild.members.cache.has(message.author.id)) {
+            const hasMember = guild.members.cache.has(message.author.id);
+            console.log('[DEBUG:runPipeline][guildId取得] fetch結果:', {id, hasMember});
+            if (hasMember) {
               guildId = id;
+              console.log('[DEBUG:runPipeline][guildId取得] guildId決定:', guildId);
               break;
             }
           } catch (e) {
+            console.log('[DEBUG:runPipeline][guildId取得] fetchエラー:', {id, error: e});
             // エラーは無視
           }
         }
+        console.log('[DEBUG:runPipeline][guildId取得] 最終guildId:', guildId);
       }
       let historyMsgs = await buildHistoryContext(supabase, message.author.id, channelKey, guildId);
       let reply;
