@@ -301,6 +301,16 @@ export async function runPipeline(action, { message, flags, supabase }) {
 async function saveHistory(supabase, message, userPrompt, botReply) {
   const channelId = message.guild ? message.channel.id : 'DM';
   const guildId = message.guild ? message.guild.id : null;
+  // --- 追加: guildIdとmessage.guildのデバッグログ ---
+  console.log('[DEBUG:saveHistory][guildIdチェック]', {
+    guildId,
+    'message.guild': message.guild,
+    'message.guild?.id': message.guild?.id,
+    'message.channel?.id': message.channel?.id,
+    'message.channel?.type': message.channel?.type,
+    'message.channel': message.channel,
+    'message': message
+  });
   // 1. チャンネル単位の保存（従来通り）
   const { data } = await supabase
     .from('conversation_histories')
@@ -375,33 +385,70 @@ async function saveHistory(supabase, message, userPrompt, botReply) {
       });
       let writeResult = null;
       if (gdata?.id) {
+        // --- 1件あたりのメッセージ長をtruncate ---
+        const MAX_MSG = 3000;
+        gmessages = gmessages.map(m => ({
+          ...m,
+          user: m.user.slice(0, MAX_MSG),
+          bot: m.bot.slice(0, MAX_MSG)
+        }));
         writeResult = await supabase
           .from('conversation_histories')
           .update({ messages: gmessages, updated_at: new Date().toISOString() })
           .eq('id', gdata.id);
+        console.log('[DEBUG:saveHistory][after await update]');
+        // --- 追加: update時のエラーログ ---
+        if (writeResult.error) {
+          console.error('[DEBUG:saveHistory][guild save update ERROR]', {
+            guildId,
+            error: writeResult.error,
+            writeResult
+          });
+        }
+        // --- 追加: update時のwriteResult全体ログ ---
+        console.log('[DEBUG:saveHistory][before update writeResult log]');
+        console.log('[DEBUG:saveHistory][guild save update writeResult]', writeResult);
+        console.log('[DEBUG:saveHistory][after update writeResult log]');
       } else {
+        // --- 1件あたりのメッセージ長をtruncate ---
+        const MAX_MSG = 3000;
+        gmessages = gmessages.map(m => ({
+          ...m,
+          user: m.user.slice(0, MAX_MSG),
+          bot: m.bot.slice(0, MAX_MSG)
+        }));
         writeResult = await supabase
           .from('conversation_histories')
           .insert({
             guild_id: guildId,
+            user_id: message.author.id,
             channel_id: null,
             messages: gmessages,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
           });
+        console.log('[DEBUG:saveHistory][after await insert]');
+        // --- 追加: insert時のエラーログ ---
+        if (writeResult.error) {
+          console.error('[DEBUG:saveHistory][guild save insert ERROR]', {
+            guildId,
+            error: writeResult.error,
+            writeResult
+          });
+        }
+        // --- 追加: insert時のwriteResult全体ログ ---
+        console.log('[DEBUG:saveHistory][before insert writeResult log]');
+        console.log('[DEBUG:saveHistory][guild save insert writeResult]', writeResult);
+        console.log('[DEBUG:saveHistory][after insert writeResult log]');
       }
-      // --- 追加: 書き込みレスポンスデバッグ ---
-      console.log('[DEBUG:saveHistory][guild save writeResult]', {
-        guildId,
-        writeResult,
-      });
       // --- 追加: 保存後のサーバー全体履歴デバッグ ---
       const { data: gdataAfter, error: gdataAfterErr } = await supabase
         .from('conversation_histories')
         .select('id, messages')
         .eq('guild_id', guildId)
         .is('channel_id', null)
-        .maybeSingle();
+        .is('user_id', null)
+        .single(); // 1行に限定
       console.log('[DEBUG:saveHistory][after guild save]', {
         guildId,
         gdataAfter,
