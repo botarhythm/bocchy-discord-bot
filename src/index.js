@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 import { OpenAI } from "openai";
 import { detectFlags } from "./flag-detector.js";
 import { pickAction } from "./decision-engine.js";
-import { runPipeline } from "./action-runner.js";
+import { runPipeline, shouldContextuallyIntervene, buildHistoryContext } from "./action-runner.js";
 import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
@@ -152,7 +152,29 @@ client.on("messageCreate", async (message) => {
         return;
       }
     }
-    // --- 既存の盛り上がり判定（自然介入） ---
+    // --- 文脈理解型の自然介入（新ロジック） ---
+    if (!isDM && supabase) {
+      const channelId = message.channel.id;
+      // Supabaseから履歴を取得
+      const { data } = await supabase
+        .from('conversation_histories')
+        .select('messages')
+        .eq('channel_id', channelId)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const messages = data?.messages || [];
+      if (messages.length > 5) { // 履歴がある程度溜まってから
+        const intervention = await shouldContextuallyIntervene(messages);
+        if (intervention) {
+          await message.channel.send(intervention);
+          // クールダウン管理は既存のinterventionCooldownsでOK
+          interventionCooldowns.set(channelId, Date.now());
+          return;
+        }
+      }
+    }
+    // --- 既存の盛り上がり判定（自然介入/fallback） ---
     if (!isDM) {
       const channelId = message.channel.id;
       if (!channelHistories.has(channelId)) channelHistories.set(channelId, []);

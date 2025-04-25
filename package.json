@@ -18,5 +18,9 @@
   "type": "module",
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "chai": "^5.2.0",
+    "sinon": "^20.0.0"
   }
 }

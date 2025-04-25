@@ -4,6 +4,7 @@ import fetch from 'node-fetch';
 import { OpenAI } from 'openai';
 import yaml from 'js-yaml';
 import fs from 'fs';
+import { resolveGuildId } from './utils/resolveGuildId.js';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -259,26 +260,10 @@ export async function runPipeline(action, { message, flags, supabase }) {
       let guildId = null;
       if (message.guild) {
         guildId = message.guild.id;
-      } else if (message.client && message.client.guilds && message.client.guilds.cache) {
-        // --- デバッグ強化: ユーザーが所属するサーバーIDを1つ取得（DM時） ---
-        console.log('[DEBUG:runPipeline][guildId取得] guilds.cache:', message.client.guilds.cache.map ? message.client.guilds.cache.map(g=>g.id) : message.client.guilds.cache);
-        for (const [id, guild] of message.client.guilds.cache) {
-          try {
-            console.log('[DEBUG:runPipeline][guildId取得] チェック中guild:', id);
-            await guild.members.fetch(message.author.id); // キャッシュを確実に取得
-            const hasMember = guild.members.cache.has(message.author.id);
-            console.log('[DEBUG:runPipeline][guildId取得] fetch結果:', {id, hasMember});
-            if (hasMember) {
-              guildId = id;
-              console.log('[DEBUG:runPipeline][guildId取得] guildId決定:', guildId);
-              break;
-            }
-          } catch (e) {
-            console.log('[DEBUG:runPipeline][guildId取得] fetchエラー:', {id, error: e});
-            // エラーは無視
-          }
-        }
-        console.log('[DEBUG:runPipeline][guildId取得] 最終guildId:', guildId);
+      } else {
+        console.log('[DEBUG] DM: guild 解決開始 … userId=', message.author.id);
+        guildId = await resolveGuildId(message.client, message.author.id);
+        console.log('[DEBUG] DM: guildId 解決結果 =', guildId);
       }
       let historyMsgs = await buildHistoryContext(supabase, message.author.id, channelKey, guildId);
       let reply;
@@ -498,4 +483,46 @@ async function saveHistory(supabase, message, userPrompt, botReply) {
       });
     }
   }
+}
+
+export { buildHistoryContext, saveHistory };
+
+// --- 文脈理解型 介入用AIプロンプト・関数 ---
+/**
+ * 直近の会話履歴から盛り上がり度・沈黙・困りごと・話題転換をAIで判定し、
+ * 今ボットが自然に発言するならどんな内容が適切かを返す
+ */
+export async function analyzeConversationContext(historyText) {
+  const prompt = `以下はDiscordチャンネルの直近の会話履歴です。\nこの場の「盛り上がり度（1-10）」「沈黙状態か」「困っている人がいるか」「話題の転換があったか」を判定してください。\nまた、今ボットが自然に発言するなら、どんな内容が適切か例を1つ出してください。\n履歴:\n${historyText}\nJSON形式で返答してください。`;
+  const res = await openai.chat.completions.create({
+    model: "gpt-4o-mini-2024-07-18",
+    messages: [{role: "system", content: prompt}]
+  });
+  try {
+    return JSON.parse(res.choices[0].message.content);
+  } catch (e) {
+    // JSONで返らなかった場合のフォールバック
+    return { 盛り上がり度: 5, 沈黙: false, 困りごと: false, 話題転換: false, 介入例: res.choices[0].message.content.trim() };
+  }
+}
+
+/**
+ * 直近N件の履歴をテキスト化
+ */
+export function buildHistoryText(messages, n = 20) {
+  return messages.slice(-n).map(m => `ユーザー: ${m.user}\nボッチー: ${m.bot}`).join("\n");
+}
+
+/**
+ * 文脈理解型の介入判定（盛り上がり度・困りごと・沈黙などを考慮）
+ * @param {Array} messages - Supabaseから取得した履歴
+ * @returns {string|null} 介入例テキスト or null
+ */
+export async function shouldContextuallyIntervene(messages) {
+  const historyText = buildHistoryText(messages, 20);
+  const context = await analyzeConversationContext(historyText);
+  if (context.盛り上がり度 >= 7 || context.困りごと || context.沈黙) {
+    return context.介入例;
+  }
+  return null;
 } 
