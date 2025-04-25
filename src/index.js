@@ -115,6 +115,8 @@ function isExplicitMention(message) {
 // --- AI盛り上がり判定＋動的クールダウン ---
 const channelHistories = new Map();
 const interventionCooldowns = new Map();
+// 直前の介入メッセージをチャンネルごとに記録
+const lastInterventions = new Map();
 
 client.on("messageCreate", async (message) => {
   // --- 追加: 受信メッセージの詳細デバッグログ ---
@@ -144,6 +146,8 @@ client.on("messageCreate", async (message) => {
         debugInfo.action = action;
         try {
           await runPipeline(action, { message, flags, supabase });
+          // 介入メッセージを記録（強制介入時はrunPipeline内でreply/sendされる）
+          // ここでは記録しない（自然介入のみ記録）
           console.log('[強制介入デバッグ] runPipeline実行: action=', action, 'flags=', flags);
         } catch (err) {
           debugInfo.error = err?.stack || err?.message || String(err);
@@ -164,10 +168,14 @@ client.on("messageCreate", async (message) => {
         .limit(1)
         .maybeSingle();
       const messages = data?.messages || [];
+      // 直前の介入メッセージを取得
+      const lastIntervention = lastInterventions.get(channelId) || null;
       if (messages.length > 5) { // 履歴がある程度溜まってから
-        const intervention = await shouldContextuallyIntervene(messages);
+        const intervention = await shouldContextuallyIntervene(messages, lastIntervention);
         if (intervention) {
           await message.channel.send(intervention);
+          // 介入メッセージを記録
+          lastInterventions.set(channelId, intervention);
           // クールダウン管理は既存のinterventionCooldownsでOK
           interventionCooldowns.set(channelId, Date.now());
           return;

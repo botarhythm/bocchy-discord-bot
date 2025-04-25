@@ -489,11 +489,23 @@ export { buildHistoryContext, saveHistory };
 
 // --- 文脈理解型 介入用AIプロンプト・関数 ---
 /**
- * 直近の会話履歴から盛り上がり度・沈黙・困りごと・話題転換をAIで判定し、
- * 今ボットが自然に発言するならどんな内容が適切かを返す
+ * 直近の会話履歴と前回介入メッセージから、
+ * - 介入すべきか（盛り上がり度・困りごと・沈黙）
+ * - 介入後の会話継続判定
+ * - 介入例生成
+ * を一括でAI判定し、Token消費を最小化
+ * @param {Array} messages - Supabaseから取得した履歴
+ * @param {string|null} lastIntervention - 直前のボット介入メッセージ（なければnull）
+ * @returns {Object} { intervene: boolean, continued: boolean, reason: string, example: string }
  */
-export async function analyzeConversationContext(historyText) {
-  const prompt = `以下はDiscordチャンネルの直近の会話履歴です。\nこの場の「盛り上がり度（1-10）」「沈黙状態か」「困っている人がいるか」「話題の転換があったか」を判定してください。\nまた、今ボットが自然に発言するなら、どんな内容が適切か例を1つ出してください。\n履歴:\n${historyText}\nJSON形式で返答してください。`;
+export async function shouldInterveneWithContinuation(messages, lastIntervention = null) {
+  const historyText = buildHistoryText(messages, 20);
+  const prompt = `以下はDiscordチャンネルの直近の会話履歴です。\n` +
+    (lastIntervention ? `直前のボットの介入メッセージ:\n${lastIntervention}\n` : '') +
+    `この場の「盛り上がり度（1-10）」「沈黙状態か」「困っている人がいるか」「話題の転換があったか」を判定してください。\n` +
+    `また、直前のボット介入があれば「その話題が継続しているか」も判定してください。\n` +
+    `今ボットが自然に発言するなら、どんな内容が適切か例を1つ出してください。\n` +
+    `JSON形式で以下のキーで返答してください: { intervene: boolean, continued: boolean, reason: string, example: string }\n履歴:\n${historyText}`;
   const res = await openai.chat.completions.create({
     model: "gpt-4o-mini-2024-07-18",
     messages: [{role: "system", content: prompt}]
@@ -502,8 +514,17 @@ export async function analyzeConversationContext(historyText) {
     return JSON.parse(res.choices[0].message.content);
   } catch (e) {
     // JSONで返らなかった場合のフォールバック
-    return { 盛り上がり度: 5, 沈黙: false, 困りごと: false, 話題転換: false, 介入例: res.choices[0].message.content.trim() };
+    return { intervene: false, continued: false, reason: 'パース失敗', example: res.choices[0].message.content.trim() };
   }
+}
+
+// 既存のshouldContextuallyInterveneを新関数経由に
+export async function shouldContextuallyIntervene(messages, lastIntervention = null) {
+  const result = await shouldInterveneWithContinuation(messages, lastIntervention);
+  if (result.intervene) {
+    return result.example;
+  }
+  return null;
 }
 
 /**
@@ -511,35 +532,4 @@ export async function analyzeConversationContext(historyText) {
  */
 export function buildHistoryText(messages, n = 20) {
   return messages.slice(-n).map(m => `ユーザー: ${m.user}\nボッチー: ${m.bot}`).join("\n");
-}
-
-/**
- * 文脈理解型の介入判定（盛り上がり度・困りごと・沈黙などを考慮）
- * @param {Array} messages - Supabaseから取得した履歴
- * @returns {string|null} 介入例テキスト or null
- */
-export async function shouldContextuallyIntervene(messages) {
-  const historyText = buildHistoryText(messages, 20);
-  const context = await analyzeConversationContext(historyText);
-  if (context.盛り上がり度 >= 7 || context.困りごと || context.沈黙) {
-    return context.介入例;
-  }
-  return null;
-}
-
-/**
- * 直近の会話履歴と前回介入メッセージから「話題が継続しているか」をAIで判定
- * @param {string} lastIntervention - 前回介入メッセージ
- * @param {Array} messages - 履歴（Supabase形式）
- * @returns {boolean} 継続していればtrue
- */
-export async function isTopicContinued(lastIntervention, messages) {
-  const historyText = buildHistoryText(messages, 10);
-  const prompt = `以下はDiscordチャンネルの直近の会話履歴です。\n直前のボットの介入メッセージ:\n${lastIntervention}\nこのメッセージと同じ話題が継続していますか？「はい」または「いいえ」で答え、理由も簡単に述べてください。\n履歴:\n${historyText}`;
-  const res = await openai.chat.completions.create({
-    model: "gpt-4o-mini-2024-07-18",
-    messages: [{role: "system", content: prompt}]
-  });
-  const content = res.choices[0].message.content.trim();
-  return content.startsWith("はい");
 } 

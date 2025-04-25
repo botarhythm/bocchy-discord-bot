@@ -1,0 +1,18 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Railway プロジェクト設定
+
+## プロジェクトID
+13f5d497-6af5-4f86-9c71-1ac00d608a5c
+
+## ナレッジ・メモ
+- このプロジェクトIDはRailwayの管理画面やCLI操作時に利用します。
+- オートデプロイの状況確認や設定変更は、RailwayのWebダッシュボード（https://railway.app/project/13f5d497-6af5-4f86-9c71-1ac00d608a5c）から行えます。
+- GitHub連携が有効な場合、mainブランチ等へのpushで自動デプロイが実行されます。
+- デプロイ履歴やログは「Deployments」タブで確認可能です。
+- サービスや環境変数の追加・編集も同ダッシュボードから行えます。
+- CLIで操作する場合は `railway link` コマンドでこのIDを指定して紐付けます。
+- 問題が発生した場合は、Railwayの「Logs」や「Deployments」タブで詳細を確認してください。
