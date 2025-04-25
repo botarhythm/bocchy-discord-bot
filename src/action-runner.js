@@ -40,7 +40,7 @@ function buildCharacterPrompt(message) {
 }
 
 // ---------- 0. 定数 ----------
-const SHORT_TURNS   = 4;   // ← 直近 4 往復だけ詳細
+const SHORT_TURNS   = 8;   // ← 直近 8 往復だけ詳細（元は4）
 const MAX_ARTICLES  = 3;
 
 // ---------- A.  summary を取ってシステムに渡すヘルパ ----------
@@ -98,8 +98,7 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null) 
     guildSummary,
     guildRecent
   });
-
-  // 4) OpenAI messages 形式に変換
+  // --- 追加: 実際にプロンプトに含まれる履歴(messages)を詳細出力 ---
   const msgs = [];
   if (guildSummary) msgs.push({ role: 'system', content: `【サーバー全体要約】${guildSummary}` });
   guildRecent.forEach(t => {
@@ -113,6 +112,8 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null) 
     msgs.push({ role: 'user', content: t.user });
     msgs.push({ role: 'assistant', content: t.bot });
   });
+  // --- 追加: プロンプトに含まれる履歴を出力 ---
+  console.log('[DEBUG:buildHistoryContext][PROMPT_MESSAGES]', msgs);
   return msgs;
 }
 
