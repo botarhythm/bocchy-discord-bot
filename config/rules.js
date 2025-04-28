@@ -1,0 +1,1 @@
+// ルールファイル: bocchy_core_rules.mdc, bocchy_rules.mdc など 
