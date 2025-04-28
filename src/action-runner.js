@@ -263,7 +263,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
         .join('\n\n');
       await message.reply(`【検索まとめ ${results.length}件】\n` + output);
       if (supabase) {
-        await saveHistory(supabase, message, userPrompt, output);
+        await saveHistory(supabase, message, userPrompt, output, affinity);
       }
       return;
     } else if (action === "llm_only") {
@@ -289,7 +289,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
       }
       await message.reply(reply);
       if (supabase) {
-        await saveHistory(supabase, message, userPrompt, reply);
+        await saveHistory(supabase, message, userPrompt, reply, affinity);
       }
     } else {
       console.debug('[runPipeline] actionが未定義または不明:', action);
@@ -304,7 +304,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
 }
 
 // 📝 おしゃべりの記録をそっと保存するよ（たくさんなら森の記憶にまとめるね）
-async function saveHistory(supabase, message, userPrompt, botReply) {
+async function saveHistory(supabase, message, userPrompt, botReply, affinity) {
   const channelId = message.guild ? message.channel.id : 'DM';
   const guildId = message.guild ? message.guild.id : null;
   // --- 追加: guildIdとmessage.guildのデバッグログ ---
