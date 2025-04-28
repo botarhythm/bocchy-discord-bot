@@ -34,6 +34,10 @@ function buildCharacterPrompt(message, affinity = 0) {
   for (const f of bocchyConfig.features) {
     prompt += `- ${f.name}: ${f.description.replace(/\n/g, " ")}\n`;
   }
+  // 現在日時（日本時間）を追加
+  const now = new Date();
+  const jpTime = now.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+  prompt += `【現在日時】${jpTime}（日本時間）\n`;
   // ユーザー呼称を明示的に追加
   const userDisplayName = getUserDisplayName(message);
   prompt += `【ユーザー呼称】この会話の相手は「${userDisplayName}」さんです。\n`;
