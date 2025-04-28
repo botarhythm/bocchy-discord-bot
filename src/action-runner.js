@@ -5,6 +5,7 @@ import { OpenAI } from 'openai';
 import yaml from 'js-yaml';
 import fs from 'fs';
 import { resolveGuildId } from './utils/resolveGuildId.js';
+import { getAffinity, updateAffinity } from './utils/affinity.js';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -21,7 +22,7 @@ function getUserDisplayName(message) {
   return message.author.globalName || message.author.username;
 }
 
-function buildCharacterPrompt(message) {
+function buildCharacterPrompt(message, affinity = 0) {
   // 必要な要素をsystem promptとして連結
   let prompt = `${bocchyConfig.description}\n`;
   prompt += `【性格】${bocchyConfig.personality.tone}\n`;
@@ -37,6 +38,13 @@ function buildCharacterPrompt(message) {
   const userDisplayName = getUserDisplayName(message);
   prompt += `【ユーザー呼称】この会話の相手は「${userDisplayName}」さんです。\n`;
   prompt += `【自己紹介ルール】あなたが自分を名乗るときは必ず「ボッチー」と日本語で名乗ってください。英語表記（Bocchy）は必要なときのみ使ってください。\n`;
+  // 親密度による心理距離
+  const relation =
+    affinity > 0.6 ? 'とても親しい' :
+    affinity < -0.4 ? '距離がある' : '普通';
+  prompt += `【心理距離】${relation}\n`;
+  // pronoun enforcement
+  prompt += 'あなたは自分を呼ぶとき「ボッチー」または「わたし」を使い、性別を感じさせない語調を守ってください。\n';
   return prompt;
 }
 
@@ -143,10 +151,10 @@ async function googleSearch(query, attempt = 0) {
     .map(i => ({ title: i.title, link: i.link, snippet: i.snippet }));
 }
 
-async function llmRespond(prompt, systemPrompt = "", message = null, history = []) {
-  const charPrompt = buildCharacterPrompt(message);
+async function llmRespond(prompt, systemPrompt = "", message = null, history = [], charPrompt = null) {
+  const systemCharPrompt = charPrompt ?? (message ? buildCharacterPrompt(message) : "");
   const messages = [
-    { role: "system", content: charPrompt + (systemPrompt ? `\n${systemPrompt}` : "") },
+    { role: "system", content: systemCharPrompt + (systemPrompt ? `\n${systemPrompt}` : "") },
     ...history
   ];
   messages.push({ role: "user", content: prompt });
@@ -198,6 +206,10 @@ function appendDateAndImpactWordsIfNeeded(userPrompt, query) {
 }
 
 export async function runPipeline(action, { message, flags, supabase }) {
+  const guildId = message.guild?.id || 'DM';
+  const affinity = supabase
+      ? await getAffinity(supabase, message.author.id, guildId)
+      : 0;
   try {
     // 📝 どの木陰（チャンネル）でおしゃべりしてるか見てみるね
     const channelKey = message.guild ? `${message.channel.id}` : 'DM';
@@ -223,7 +235,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
 
     if (action === "search_only" || action === "combined") {
       const userPrompt = message.content.replace(/<@!?\\d+>/g, "").trim();
-      let searchQuery = await llmRespond(userPrompt, queryGenSystemPrompt, message, []);  // 履歴混入を防止
+      let searchQuery = await llmRespond(userPrompt, queryGenSystemPrompt, message, [], buildCharacterPrompt(message, affinity));  // 履歴混入を防止
       searchQuery = appendDateAndImpactWordsIfNeeded(userPrompt, searchQuery);
       let results = await googleSearch(searchQuery);
       if (results.length < 2) {
@@ -235,7 +247,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
         await message.reply('🔍 検索結果が少なかったため、再検索＆AI補足を行いました。');
         const aiNote = await llmRespond(
           userPrompt + ' これを一般知識のみで150字以内で補足してください',
-          '', message, []
+          '', message, [], buildCharacterPrompt(message, affinity)
         );
         return await message.channel.send(aiNote);
       }
@@ -243,7 +255,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
       const summaries = await Promise.all(
         results.map(r => llmRespond(
           `この記事を 90 字以内で要約し末尾に URL を残してください。\n${r.title}\n${r.snippet}`,
-          '', message, []))
+          '', message, [], buildCharacterPrompt(message, affinity)))
       );
       // ---- 4. 結果フォーマットを必ず URL 付きで出力 ----
       const output = summaries
@@ -271,9 +283,9 @@ export async function runPipeline(action, { message, flags, supabase }) {
         const bocchyConfig = yaml.load(fs.readFileSync('bocchy-character.yaml', 'utf8'));
         const feature = bocchyConfig.features.find(f => f.name.includes('自己機能説明'));
         const featureDesc = feature ? feature.description : '';
-        reply = await llmRespond(userPrompt, featureDesc, message, historyMsgs);
+        reply = await llmRespond(userPrompt, featureDesc, message, historyMsgs, buildCharacterPrompt(message, affinity));
       } else {
-        reply = await llmRespond(userPrompt, '', message, historyMsgs);
+        reply = await llmRespond(userPrompt, '', message, historyMsgs, buildCharacterPrompt(message, affinity));
       }
       await message.reply(reply);
       if (supabase) {
@@ -323,7 +335,7 @@ async function saveHistory(supabase, message, userPrompt, botReply) {
       summaryPrompt,
       "あなたはアーカイブ要約AIです。上の対話を150文字以内で日本語要約し、重要語に 🔑 を付けてください。",
       message,
-      []
+      [], buildCharacterPrompt(message, affinity)
     );
     // 🗂️ 森の奥にそっと要約をしまっておくね
     await supabase
@@ -459,7 +471,7 @@ async function saveHistory(supabase, message, userPrompt, botReply) {
           gsummaryPrompt,
           "あなたはアーカイブ要約AIです。上の対話を150文字以内で日本語要約し、重要語に 🔑 を付けてください。",
           message,
-          []
+          [], buildCharacterPrompt(message, affinity)
         );
         await supabase
           .from('conversation_summaries')

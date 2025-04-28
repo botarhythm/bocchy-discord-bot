@@ -27,6 +27,13 @@ bocchy-discord-botは、Discordサーバーで"人間らしい空気読み"と"�
 ### 4. 自然介入・コマンドレス応答
 - メンションやコマンドがなくても、会話の流れや盛り上がりに応じて自発的に発言
 
+## 親密度(Affinity)パッチについて
+
+- ユーザーごとの親密度(affinity)をSupabaseで管理し、発言トーンや一人称を動的に変化させます。
+- 一人称は「ボッチー」または「わたし」に統一され、中性的な語調を維持します。
+- Supabaseにuser_affinityテーブルとadjust_affinity関数を追加してください（`supabase/affinity.sql`参照）。
+- 実装は`src/action-runner.js`・`src/utils/affinity.js`・`bocchy-character.yaml`に反映されています。
+
 ## 今後の拡張ポイント
 - APIコストを抑えるための「自己機能説明時や管理者指示時のみAI判定有効化」ロジックの導入
 - ルールベース＋AIハイブリッドによる効率的な空気読み

@@ -13,4 +13,6 @@ coverage/
 *.log
 rules/
 test/
+!supabase/
+!supabase/affinity.sql
 
