@@ -40,7 +40,7 @@ function buildCharacterPrompt(message, affinity = 0) {
   prompt += `【現在日時】${jpTime}（日本時間）\n`;
   // ユーザー呼称を明示的に追加
   const userDisplayName = getUserDisplayName(message);
-  prompt += `【ユーザー呼称】この会話の相手は「${userDisplayName}」さんです。\n`;
+  prompt += `【ユーザー情報】この会話の相手は「${userDisplayName}」さんです。応答文の適切な位置で「${userDisplayName}さん」と呼びかけ、親しみやすい文体で返答してください。\n`;
   prompt += `【自己紹介ルール】あなたが自分を名乗るときは必ず「ボッチー」と日本語で名乗ってください。英語表記（Bocchy）は必要なときのみ使ってください。\n`;
   // 親密度による心理距離
   const relation =
@@ -291,7 +291,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
       } else {
         reply = await llmRespond(userPrompt, '', message, historyMsgs, buildCharacterPrompt(message, affinity));
       }
-      await message.reply(reply);
+      await message.reply({ content: reply, allowedMentions: { repliedUser: false } });
       if (supabase) {
         await saveHistory(supabase, message, userPrompt, reply, affinity);
       }
