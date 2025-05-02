@@ -1,5 +1,14 @@
 # bocchy-discord-bot
 
+## アップデート履歴（2025年5月）
+
+- **高度な文脈知能・パーソナライズ**：Supabaseスキーマ拡張、ユーザープロファイル・履歴・ベクトル検索による個別最適化応答
+- **自己反省・自己修正**：GPT-4o-miniによるBot応答の適切性チェックと自動修正
+- **長期記憶・会話要約**：LangChain＋Supabaseで会話全体の要約・話題・感情トーンを保存
+- **感情分析**：HuggingFace Transformersによる感情分析（現在は本番環境で一時停止中）
+- **運用自動化・MCP監視**：MCP（Model Context Protocol）によるRailway/Supabaseの自動監視・デプロイ・ログ取得
+- **GitHub⇔Railway連携の安定化**：mainブランチ再Pushによるデプロイ同期不整合の自動解消
+
 ## 概要
 
 **bocchy-discord-bot**は、Discordサーバーで"人間らしい空気読み"と"高度な文脈理解"を実現するAIチャットボットです。
