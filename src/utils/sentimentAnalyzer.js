@@ -4,7 +4,10 @@ let sentimentPipeline = null;
 
 export async function getSentiment(text) {
   if (!sentimentPipeline) {
-    sentimentPipeline = await pipeline('sentiment-analysis', 'Xenova/bert-base-japanese-sentiment');
+    const hfToken = process.env.HUGGINGFACE_HUB_TOKEN;
+    sentimentPipeline = await pipeline('sentiment-analysis', 'Xenova/bert-base-japanese-sentiment', {
+      accessToken: hfToken
+    });
   }
   try {
     const result = await sentimentPipeline(text);
