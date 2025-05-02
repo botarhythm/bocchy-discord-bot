@@ -8,6 +8,13 @@ import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
+process.on('unhandledRejection', (reason, p) => {
+  console.error('[UNHANDLED REJECTION]', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[UNCAUGHT EXCEPTION]', err);
+});
+
 if (process.env.BOT_ENABLED !== "true") {
   console.log("🚫 Bocchy bot is disabled by .env");
   process.exit(0);
