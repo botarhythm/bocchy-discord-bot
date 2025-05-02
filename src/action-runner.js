@@ -6,6 +6,9 @@ import yaml from 'js-yaml';
 import fs from 'fs';
 import { resolveGuildId } from './utils/resolveGuildId.js';
 import { getAffinity, updateAffinity } from './utils/affinity.js';
+import { getSentiment } from './utils/sentimentAnalyzer.js';
+import { analyzeGlobalContext } from './utils/analyzeGlobalContext.js';
+import { reflectiveCheck } from './utils/reflectiveCheck.js';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -22,8 +25,7 @@ function getUserDisplayName(message) {
   return message.author.globalName || message.author.username;
 }
 
-function buildCharacterPrompt(message, affinity = 0) {
-  // 必要な要素をsystem promptとして連結
+function buildCharacterPrompt(message, affinity = 0, userProfile = null, globalContext = null) {
   let prompt = `${bocchyConfig.description}\n`;
   prompt += `【性格】${bocchyConfig.personality.tone}\n`;
   prompt += `【感情表現】${bocchyConfig.personality.emotion_expression}\n`;
@@ -49,6 +51,19 @@ function buildCharacterPrompt(message, affinity = 0) {
   prompt += `【心理距離】${relation}\n`;
   // pronoun enforcement
   prompt += 'あなたは自分を呼ぶとき「ボッチー」または「わたし」を使い、性別を感じさせない語調を守ってください。\n';
+  // --- 追加: ユーザープロファイル・好み・傾向 ---
+  if (userProfile && userProfile.preferences) {
+    prompt += `【ユーザーの好み・傾向】${JSON.stringify(userProfile.preferences)}\n`;
+  }
+  // --- 追加: 会話全体の感情トーン・主な話題 ---
+  if (globalContext) {
+    if (globalContext.tone) {
+      prompt += `【会話全体の感情トーン】${globalContext.tone}\n`;
+    }
+    if (globalContext.topics && globalContext.topics.length > 0) {
+      prompt += `【最近よく話題にしているテーマ】${globalContext.topics.join('、')}\n`;
+    }
+  }
   return prompt;
 }
 
@@ -101,7 +116,51 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null) 
     guildRecent = (ghist?.messages ?? []).slice(-2); // 直近2往復だけ
   }
 
-  // --- 追加: 取得状況を詳細デバッグ出力 ---
+  // 4) ユーザープロファイル取得
+  let userProfile = null;
+  try {
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('guild_id', guildId)
+      .maybeSingle();
+    userProfile = profile;
+  } catch (e) { userProfile = null; }
+
+  // 5) ベクトル類似検索でパーソナライズ履歴取得
+  let personalizedHistory = [];
+  try {
+    // 最新発言をベクトル化
+    const lastUserMsg = recent.length > 0 ? recent[recent.length-1].user : '';
+    let embedding = null;
+    if (lastUserMsg) {
+      const embRes = await openai.embeddings.create({
+        model: 'text-embedding-ada-002',
+        input: lastUserMsg
+      });
+      embedding = embRes.data[0].embedding;
+    }
+    if (embedding) {
+      const { data: simRows } = await supabase.rpc('match_user_interactions', {
+        p_user_id: userId,
+        p_guild_id: guildId,
+        p_embedding: embedding,
+        p_match_threshold: 0.75,
+        p_match_count: 3
+      });
+      personalizedHistory = (simRows || []).map(r => ({ user: r.message, bot: r.bot_reply }));
+    }
+  } catch (e) { personalizedHistory = []; }
+
+  // 6) グローバル文脈要約・感情トーン分析
+  let globalContext = null;
+  try {
+    const allHistory = [...guildRecent, ...recent, ...personalizedHistory];
+    globalContext = await analyzeGlobalContext(allHistory);
+  } catch (e) { globalContext = null; }
+
+  // --- 取得状況を詳細デバッグ出力 ---
   console.log('[DEBUG:buildHistoryContext]', {
     userId,
     channelId,
@@ -109,10 +168,21 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null) 
     recent,
     sum: sum?.summary,
     guildSummary,
-    guildRecent
+    guildRecent,
+    userProfile,
+    personalizedHistory,
+    globalContext
   });
-  // --- 追加: 実際にプロンプトに含まれる履歴(messages)を詳細出力 ---
+  // --- 実際にプロンプトに含まれる履歴(messages)を詳細出力 ---
   const msgs = [];
+  if (userProfile) {
+    msgs.push({ role: 'system', content: `【ユーザープロファイル】${JSON.stringify(userProfile.preferences || {})}` });
+  }
+  if (globalContext) {
+    msgs.push({ role: 'system', content: `【会話全体要約】${globalContext.summary}` });
+    msgs.push({ role: 'system', content: `【主な話題】${(globalContext.topics||[]).join('、')}` });
+    msgs.push({ role: 'system', content: `【全体トーン】${globalContext.tone}` });
+  }
   if (guildSummary) msgs.push({ role: 'system', content: `【サーバー全体要約】${guildSummary}` });
   guildRecent.forEach(t => {
     msgs.push({ role: 'user', content: t.user });
@@ -121,11 +191,15 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null) 
   if (sum?.summary) {
     msgs.push({ role: 'system', content: `【要約】${sum.summary}` });
   }
+  personalizedHistory.forEach(t => {
+    msgs.push({ role: 'user', content: t.user });
+    msgs.push({ role: 'assistant', content: t.bot });
+  });
   recent.forEach(t => {
     msgs.push({ role: 'user', content: t.user });
     msgs.push({ role: 'assistant', content: t.bot });
   });
-  // --- 追加: プロンプトに含まれる履歴を出力 ---
+  // --- プロンプトに含まれる履歴を出力 ---
   console.log('[DEBUG:buildHistoryContext][PROMPT_MESSAGES]', msgs);
   return msgs;
 }
@@ -251,8 +325,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
         await message.reply('🔍 検索結果が少なかったため、再検索＆AI補足を行いました。');
         const aiNote = await llmRespond(
           userPrompt + ' これを一般知識のみで150字以内で補足してください',
-          '', message, [], buildCharacterPrompt(message, affinity)
-        );
+          '', message, [], buildCharacterPrompt(message, affinity));
         return await message.channel.send(aiNote);
       }
       // ---- 3. LLM 要約を並列化（Promise.all） ----
@@ -272,7 +345,6 @@ export async function runPipeline(action, { message, flags, supabase }) {
       return;
     } else if (action === "llm_only") {
       const userPrompt = message.content.replace(/<@!?\\d+>/g, "").trim();
-      // DMでもサーバー全体の知識を活用するため、ユーザーが所属するサーバーIDを取得する
       let guildId = null;
       if (message.guild) {
         guildId = message.guild.id;
@@ -282,18 +354,62 @@ export async function runPipeline(action, { message, flags, supabase }) {
         console.log('[DEBUG] DM: guildId 解決結果 =', guildId);
       }
       let historyMsgs = await buildHistoryContext(supabase, message.author.id, channelKey, guildId);
+      let userProfile = null, globalContext = null;
+      for (const m of historyMsgs) {
+        if (m.role === 'system' && m.content.startsWith('【ユーザープロファイル】')) {
+          try { userProfile = JSON.parse(m.content.replace('【ユーザープロファイル】','').trim()); } catch(e){}
+        }
+        if (m.role === 'system' && m.content.startsWith('【会話全体要約】')) {
+          globalContext = globalContext || {};
+          globalContext.summary = m.content.replace('【会話全体要約】','').trim();
+        }
+        if (m.role === 'system' && m.content.startsWith('【主な話題】')) {
+          globalContext = globalContext || {};
+          globalContext.topics = m.content.replace('【主な話題】','').split('、').map(s=>s.trim()).filter(Boolean);
+        }
+        if (m.role === 'system' && m.content.startsWith('【全体トーン】')) {
+          globalContext = globalContext || {};
+          globalContext.tone = m.content.replace('【全体トーン】','').trim();
+        }
+      }
       let reply;
       if (isFeatureQuestion(userPrompt)) {
         const bocchyConfig = yaml.load(fs.readFileSync('bocchy-character.yaml', 'utf8'));
         const feature = bocchyConfig.features.find(f => f.name.includes('自己機能説明'));
         const featureDesc = feature ? feature.description : '';
-        reply = await llmRespond(userPrompt, featureDesc, message, historyMsgs, buildCharacterPrompt(message, affinity));
+        reply = await llmRespond(userPrompt, featureDesc, message, historyMsgs, buildCharacterPrompt(message, affinity, userProfile, globalContext));
       } else {
-        reply = await llmRespond(userPrompt, '', message, historyMsgs, buildCharacterPrompt(message, affinity));
+        reply = await llmRespond(userPrompt, '', message, historyMsgs, buildCharacterPrompt(message, affinity, userProfile, globalContext));
+      }
+      // --- 感情分析 ---
+      const sentiment = await getSentiment(userPrompt);
+      if (sentiment === 'negative') {
+        reply = `（共感モードON）${message.author.username}さん、つらい気持ちを聞かせてくれてありがとう。${reply}`;
+      }
+      // --- 自己反省チェック ---
+      const reflection = await reflectiveCheck(userPrompt, reply);
+      if (!reflection.ok && reflection.suggestion) {
+        reply = reflection.suggestion;
       }
       await message.reply({ content: reply, allowedMentions: { repliedUser: false } });
       if (supabase) {
         await saveHistory(supabase, message, userPrompt, reply, affinity);
+        // --- user_interactionsテーブルにも保存（パーソナライズ/埋め込み/感情） ---
+        try {
+          const embRes = await openai.embeddings.create({
+            model: 'text-embedding-ada-002',
+            input: userPrompt
+          });
+          const embedding = embRes.data[0].embedding;
+          await supabase.from('user_interactions').insert({
+            user_id: message.author.id,
+            guild_id: guildId,
+            message: userPrompt,
+            bot_reply: reply,
+            embedding,
+            sentiment
+          });
+        } catch(e) { console.error('[user_interactions保存失敗]', e); }
       }
     } else {
       console.debug('[runPipeline] actionが未定義または不明:', action);
@@ -339,8 +455,7 @@ async function saveHistory(supabase, message, userPrompt, botReply, affinity) {
       summaryPrompt,
       "あなたはアーカイブ要約AIです。上の対話を150文字以内で日本語要約し、重要語に 🔑 を付けてください。",
       message,
-      [], buildCharacterPrompt(message, affinity)
-    );
+      [], buildCharacterPrompt(message, affinity));
     // 🗂️ 森の奥にそっと要約をしまっておくね
     await supabase
       .from('conversation_summaries')
@@ -475,8 +590,7 @@ async function saveHistory(supabase, message, userPrompt, botReply, affinity) {
           gsummaryPrompt,
           "あなたはアーカイブ要約AIです。上の対話を150文字以内で日本語要約し、重要語に 🔑 を付けてください。",
           message,
-          [], buildCharacterPrompt(message, affinity)
-        );
+          [], buildCharacterPrompt(message, affinity));
         await supabase
           .from('conversation_summaries')
           .insert({
