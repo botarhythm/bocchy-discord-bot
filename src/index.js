@@ -5,6 +5,7 @@ import { detectFlags } from "./flag-detector.js";
 import { pickAction } from "./decision-engine.js";
 import { runPipeline, shouldContextuallyIntervene, buildHistoryContext } from "./action-runner.js";
 import { createClient } from '@supabase/supabase-js';
+import http from 'http';
 
 dotenv.config();
 
@@ -270,3 +271,17 @@ client.login(process.env.DISCORD_TOKEN);
 
 // --- イベントループ強制維持（Railway自動停止対策） ---
 setInterval(() => {}, 10000);
+
+// --- Railwayヘルスチェック対策: ダミーHTTPサーバー ---
+const port = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200, {'Content-Type': 'text/plain'});
+    res.end('ok');
+  } else {
+    res.writeHead(404, {'Content-Type': 'text/plain'});
+    res.end('not found');
+  }
+}).listen(port, () => {
+  console.log(`[HealthCheck] HTTPサーバー起動: ポート${port}`);
+});
