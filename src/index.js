@@ -267,3 +267,6 @@ async function generateInterventionMessage(history) {
 }
 
 client.login(process.env.DISCORD_TOKEN);
+
+// --- イベントループ強制維持（Railway自動停止対策） ---
+setInterval(() => {}, 10000);
