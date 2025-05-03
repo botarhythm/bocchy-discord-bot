@@ -112,26 +112,19 @@ function getTodayDate() {
 client.on("messageCreate", async (message) => {
   // --- 追加: 受信メッセージの詳細デバッグログ ---
   console.log('[DEBUG:messageCreate] content:', message.content, '\n  channelId:', message.channel?.id, '\n  guildId:', message.guild?.id, '\n  channelType:', message.channel?.type, '\n  username:', message.author?.username, '\n  isDM:', !message.guild, '\n  message.guild:', message.guild, '\n  message.channel.type:', message.channel?.type);
-  if (message.author.bot) return;
+  if (message.author.bot && message.channel?.id !== BOT_CHAT_CHANNEL) return;
   // 日次リセット
   const today = getTodayDate();
   if (today !== dailyResetDate) {
     dailyResetDate = today;
     dailyResponses = 0;
   }
-  const isDM = !message.guild;
-  const isMention = isExplicitMention(message);
-  // DMまたはメンションは時間制限を無視
-  if (!isDM && !isMention) {
-    const hour = getNowJST().getHours();
-    if (hour < RESPONSE_WINDOW_START || hour >= RESPONSE_WINDOW_END) return;
-  }
   const channelId = message.channel?.id;
   let debugInfo = {
     timestamp: new Date().toISOString(),
     userId: message.author.id,
     username: message.author.username,
-    isDM,
+    isDM: !message.guild,
     content: message.content,
     supabase: !!supabase,
     openaiKey: !!process.env.OPENAI_API_KEY,
@@ -141,7 +134,7 @@ client.on("messageCreate", async (message) => {
   };
   try {
     // --- 追加: 介入後の積極応答モード判定 ---
-    if (!isDM && channelId && activeConversationMap.has(channelId)) {
+    if (channelId && activeConversationMap.has(channelId)) {
       const state = activeConversationMap.get(channelId);
       // ユーザーがボットの直前の返答に返事した場合はターン数リセット
       if (state.lastUserId && message.author.id === state.lastUserId) {
@@ -170,7 +163,7 @@ client.on("messageCreate", async (message) => {
       }
     }
     // --- サーバーチャンネルの強制介入判定 ---
-    if (!isDM) {
+    if (!message.guild) {
       if (shouldIntervene(message)) {
         console.log(`[強制介入デバッグ] shouldIntervene=true: メッセージ: ${message.content}`);
         const flags = detectFlags(message, client);
@@ -190,7 +183,7 @@ client.on("messageCreate", async (message) => {
       }
     }
     // --- 文脈理解型の自然介入（新ロジック） ---
-    if (!isDM && supabase) {
+    if (channelId && supabase) {
       const { data } = await supabase
         .from('conversation_histories')
         .select('messages')
@@ -199,9 +192,17 @@ client.on("messageCreate", async (message) => {
         .limit(1)
         .maybeSingle();
       const messages = data?.messages || [];
-      // 直前の介入メッセージを取得
       const lastIntervention = lastInterventions.get(channelId) || null;
-      if (messages.length > 5) {
+      // デバッグ: 文脈介入チェック状況を出力
+      const lastTime = interventionCooldowns.get(channelId) || 0;
+      console.log(`[自然介入チェック] channel=${channelId}, msgs=${messages.length}, lastIntervention=${lastIntervention}, cooldownMs=${Date.now() - lastTime}`);
+      // メッセージ数閾値の調整とフォールバック対応
+      if (messages.length < 3) {
+        console.log(`[自然介入スキップ] メッセージ数不足: msgs=${messages.length} (<3)`);
+        await message.channel.send('まだお話が浅いですが、気になることがあれば何でも教えてくださいね��');
+        return;
+      }
+      if (messages.length >= 3) {
         const intervention = await shouldContextuallyIntervene(messages, lastIntervention);
         if (intervention) {
           await message.channel.send(intervention);
@@ -214,7 +215,7 @@ client.on("messageCreate", async (message) => {
       }
     }
     // --- 既存の盛り上がり判定（自然介入/fallback） ---
-    if (!isDM) {
+    if (!message.guild) {
       if (!channelHistories.has(channelId)) channelHistories.set(channelId, []);
       const history = channelHistories.get(channelId);
       history.push(message);
@@ -243,7 +244,7 @@ client.on("messageCreate", async (message) => {
     debugInfo.flags = flags;
     const action = pickAction(flags);
     debugInfo.action = action;
-    if (isDM) {
+    if (message.guild) {
       try {
         await runPipeline(action, { message, flags, supabase });
         console.log('[DMデバッグ情報]', debugInfo);
@@ -276,6 +277,9 @@ ${sumData.summary}`);
     }
     // ボット同士応答（チャンネル固定）
     if (channelId === BOT_CHAT_CHANNEL && message.author.bot) {
+      // 時間制限: ボット同士のやり取りは17時～22時のみ
+      const hour = getNowJST().getHours();
+      if (hour < RESPONSE_WINDOW_START || hour >= RESPONSE_WINDOW_END) return;
       // 日次上限チェック
       if (dailyResponses >= MAX_DAILY_RESPONSES) return;
       // ターン数制限
@@ -302,7 +306,7 @@ ${sumData.summary}`);
     }
   } catch (e) {
     debugInfo.error = e?.stack || e?.message || String(e);
-    if (isDM) {
+    if (message.guild) {
       await message.reply('エラーが発生しました。管理者にご連絡ください。');
     }
     console.error('自動デバッグ全体エラー:', debugInfo);
