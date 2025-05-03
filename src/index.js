@@ -116,9 +116,9 @@ client.on("messageCreate", async (message) => {
   // --- 追加: 受信メッセージの詳細デバッグログ ---
   console.log('[DEBUG:messageCreate] content:', message.content, '\n  channelId:', message.channel?.id, '\n  guildId:', message.guild?.id, '\n  channelType:', message.channel?.type, '\n  username:', message.author?.username, '\n  isDM:', !message.guild, '\n  message.guild:', message.guild, '\n  message.channel.type:', message.channel?.type);
   if (message.author.bot && message.channel?.id !== BOT_CHAT_CHANNEL) return;
-  // 緊急停止フラグ: trueなら応答を停止するよ🚨
-  if (EMERGENCY_STOP) {
-    console.warn('[EMERGENCY STOP] 応答を停止中です');
+  // 緊急停止フラグ: trueならボットへの応答のみ停止するよ🚨
+  if (EMERGENCY_STOP && message.author.bot) {
+    console.warn('[EMERGENCY STOP] ボット応答を停止中です');
     return;
   }
   // 日次リセット
