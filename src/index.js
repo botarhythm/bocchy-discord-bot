@@ -47,8 +47,8 @@ let settings = {
     : ["ニュース", "最新"]
 };
 
-// Supabaseクライアントを初期化するよ
-let supabase = initSupabase();
+// Supabaseクライアントを初期化するよ（settingsを渡すことで設定購読が動作するよ）
+let supabase = initSupabase(settings);
 
 function isInterventionQuery(message) {
   return settings.INTERVENTION_QUERIES.some(q => message.content.includes(q));
@@ -119,10 +119,13 @@ client.on("messageCreate", async (message) => {
     dailyResetDate = today;
     dailyResponses = 0;
   }
-  // 時間帯制限
-  const hour = getNowJST().getHours();
-  if (hour < RESPONSE_WINDOW_START || hour >= RESPONSE_WINDOW_END) return;
   const isDM = !message.guild;
+  const isMention = isExplicitMention(message);
+  // DMまたはメンションは時間制限を無視
+  if (!isDM && !isMention) {
+    const hour = getNowJST().getHours();
+    if (hour < RESPONSE_WINDOW_START || hour >= RESPONSE_WINDOW_END) return;
+  }
   const channelId = message.channel?.id;
   let debugInfo = {
     timestamp: new Date().toISOString(),
