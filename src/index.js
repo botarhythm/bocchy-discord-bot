@@ -106,6 +106,8 @@ let botConvoCounts = new Map(); // channelId → bot会話ターン数
 let botConvoTimers = new Map();
 let dailyResponses = 0;
 let dailyResetDate = getTodayDate();
+// チャンネルごとのボット会話パートナーID管理
+let botConversationPartners = new Map(); // channelId → partnerBotId
 
 /** 日本時間の今日の日付文字列(YYYY/MM/DD)を返す */
 function getTodayDate() {
@@ -115,7 +117,11 @@ function getTodayDate() {
 client.on("messageCreate", async (message) => {
   // --- 追加: 受信メッセージの詳細デバッグログ ---
   console.log('[DEBUG:messageCreate] content:', message.content, '\n  channelId:', message.channel?.id, '\n  guildId:', message.guild?.id, '\n  channelType:', message.channel?.type, '\n  username:', message.author?.username, '\n  isDM:', !message.guild, '\n  message.guild:', message.guild, '\n  message.channel.type:', message.channel?.type);
-  if (message.author.bot && message.channel?.id !== BOT_CHAT_CHANNEL) return;
+  // ボットメッセージのフィルタ: 自分のメッセージは無視、他ボットはBOT_CHAT_CHANNELのみ許可
+  if (message.author.bot) {
+    if (message.author.id === client.user.id) return;
+    if (message.channel?.id !== BOT_CHAT_CHANNEL) return;
+  }
   // 緊急停止フラグ: trueならボットへの応答のみ停止するよ🚨
   if (EMERGENCY_STOP && message.author.bot) {
     console.warn('[EMERGENCY STOP] ボット応答を停止中です');
@@ -140,7 +146,70 @@ client.on("messageCreate", async (message) => {
     flags: null,
     error: null
   };
+  // ボット同士応答（チャンネル固定）は先に処理
+  if (message.author.bot && channelId === BOT_CHAT_CHANNEL && message.author.id !== client.user.id) {
+    // 同一パートナー以外のボットからのメッセージは無視
+    const partnerId = botConversationPartners.get(channelId);
+    if (!partnerId) {
+      botConversationPartners.set(channelId, message.author.id);
+      botConvoCounts.set(channelId, 0);
+    } else if (partnerId !== message.author.id) {
+      return;
+    }
+    const hour = getNowJST().getHours();
+    // 17時～22時のみ許可
+    if (hour < RESPONSE_WINDOW_START || hour >= RESPONSE_WINDOW_END) return;
+    // 日次上限チェック
+    if (dailyResponses >= MAX_DAILY_RESPONSES) return;
+    // ターン数制限
+    let turns = botConvoCounts.get(channelId) || 0;
+    if (turns >= MAX_BOT_CONVO_TURNS) {
+      // 会話終了: パートナーとカウントをリセット
+      botConversationPartners.delete(channelId);
+      botConvoCounts.delete(channelId);
+      return;
+    }
+    // カウント更新
+    botConvoCounts.set(channelId, turns + 1);
+    // 応答実行
+    const flags = detectFlags(message, client);
+    const action = pickAction(flags);
+    await runPipeline(action, { message, flags, supabase });
+    dailyResponses++;
+    return;
+  }
   try {
+    // --- DM専用処理: 会話まとめまたはフォールバック応答 ---
+    if (!message.guild) {
+      // 会話まとめ要求
+      if (supabase && /まとめ|要約/.test(message.content)) {
+        const channelKey = 'DM';
+        const { data: sumData } = await supabase
+          .from('conversation_summaries')
+          .select('summary')
+          .eq('user_id', message.author.id)
+          .eq('channel_id', channelKey)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (sumData?.summary) {
+          await message.reply(`🔖 会話のまとめ:\n${sumData.summary}`);
+        } else {
+          await message.reply('まだまとめできるほどの会話履歴がありません。');
+        }
+      } else {
+        // DMフォールバック応答
+        const flags = detectFlags(message, client);
+        const action = pickAction(flags);
+        try {
+          await runPipeline(action, { message, flags, supabase });
+          console.log('[DM早期応答]', message.content);
+        } catch (err) {
+          console.error('[DM応答エラー]', err);
+        }
+      }
+      return;
+    }
     // --- 追加: 介入後の積極応答モード判定 ---
     if (!message.author.bot && channelId && activeConversationMap.has(channelId)) {
       const state = activeConversationMap.get(channelId);
@@ -222,8 +291,8 @@ client.on("messageCreate", async (message) => {
         }
       }
     }
-    // --- 既存の盛り上がり判定（自然介入/fallback） ---
-    if (!message.guild) {
+    // --- 既存の盛り上がり判定（自然介入/fallback: サーバーチャンネルのみ） ---
+    if (message.guild) {
       if (!channelHistories.has(channelId)) channelHistories.set(channelId, []);
       const history = channelHistories.get(channelId);
       history.push(message);
@@ -263,53 +332,19 @@ client.on("messageCreate", async (message) => {
       }
       return;
     }
-    // --- 会話まとめ要求 ---
-    if (supabase && /まとめ|要約/.test(message.content)) {
-      const channelKey = message.guild ? message.channel.id : 'DM';
-      // 最新のまとめを取得
-      const { data: sumData } = await supabase
-        .from('conversation_summaries')
-        .select('summary')
-        .eq('user_id', message.author.id)
-        .eq('channel_id', channelKey)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (sumData?.summary) {
-        await message.reply(`🔖 会話のまとめ:
-${sumData.summary}`);
-      } else {
-        await message.reply('まだまとめできるほどの会話履歴がありません。');
-      }
-      return;
-    }
-    // ボット同士応答（チャンネル固定）
-    if (channelId === BOT_CHAT_CHANNEL && message.author.bot) {
-      // 時間制限: ボット同士のやり取りは17時～22時のみ
-      const hour = getNowJST().getHours();
-      if (hour < RESPONSE_WINDOW_START || hour >= RESPONSE_WINDOW_END) return;
-      // 日次上限チェック
-      if (dailyResponses >= MAX_DAILY_RESPONSES) return;
-      // ターン数制限
-      const turns = botConvoCounts.get(channelId) || 0;
-      if (turns >= MAX_BOT_CONVO_TURNS) return;
-      botConvoCounts.set(channelId, turns + 1);
-      // 応答実行
-      const flags = detectFlags(message, client);
-      const action = pickAction(flags);
-      await runPipeline(action, { message, flags, supabase });
-      dailyResponses++;
-      return;
-    }
-    // 会話に人間が介入したらリセット
+    // 会話に人間が介入したらボット会話パートナーとカウントをリセット
     if (channelId === BOT_CHAT_CHANNEL && !message.author.bot) {
+      botConversationPartners.delete(channelId);
       botConvoCounts.delete(channelId);
       if (botConvoTimers.has(channelId)) {
         clearTimeout(botConvoTimers.get(channelId));
         botConvoTimers.delete(channelId);
       }
-      // 一定時間後にリセット
-      const tid = setTimeout(() => botConvoCounts.delete(channelId), 10 * 60 * 1000);
+      // 一定時間後に再度リセット
+      const tid = setTimeout(() => {
+        botConversationPartners.delete(channelId);
+        botConvoCounts.delete(channelId);
+      }, 10 * 60 * 1000);
       botConvoTimers.set(channelId, tid);
     }
   } catch (e) {

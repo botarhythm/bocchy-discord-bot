@@ -384,8 +384,9 @@ export async function runPipeline(action, { message, flags, supabase }) {
       // --- 感情分析 ---
       const sentiment = await getSentiment(userPrompt);
       if (sentiment === 'negative') {
-        // 共感モード表示を削除し、共感メッセージのみ残す
-        reply = `${message.author.username}さん、つらい気持ちを聞かせてくれてありがとう。${reply}`;
+        // 共感メッセージ: 表示名を優先して呼びかける
+        const displayName = getUserDisplayName(message);
+        reply = `${displayName}さん、つらい気持ちを聞かせてくれてありがとう。${reply}`;
       }
       // --- 自己反省チェック ---
       const reflection = await reflectiveCheck(userPrompt, reply);
