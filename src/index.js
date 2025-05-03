@@ -148,7 +148,8 @@ client.on("messageCreate", async (message) => {
   };
   // ボット同士応答（チャンネル固定）は先に処理
   if (message.author.bot && channelId === BOT_CHAT_CHANNEL && message.author.id !== client.user.id) {
-    // 同一パートナー以外のボットからのメッセージは無視
+    // デバッグログ: dailyResponsesとchannelIdを出力
+    console.log(`[bot-to-bot DEBUG] channelId=${channelId}, dailyResponses=${dailyResponses}`);
     const partnerId = botConversationPartners.get(channelId);
     if (!partnerId) {
       botConversationPartners.set(channelId, message.author.id);
