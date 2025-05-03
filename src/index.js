@@ -134,7 +134,7 @@ client.on("messageCreate", async (message) => {
   };
   try {
     // --- 追加: 介入後の積極応答モード判定 ---
-    if (channelId && activeConversationMap.has(channelId)) {
+    if (!message.author.bot && channelId && activeConversationMap.has(channelId)) {
       const state = activeConversationMap.get(channelId);
       // ユーザーがボットの直前の返答に返事した場合はターン数リセット
       if (state.lastUserId && message.author.id === state.lastUserId) {
@@ -199,7 +199,7 @@ client.on("messageCreate", async (message) => {
       // メッセージ数閾値の調整とフォールバック対応
       if (messages.length < 3) {
         console.log(`[自然介入スキップ] メッセージ数不足: msgs=${messages.length} (<3)`);
-        await message.channel.send('まだお話が浅いですが、気になることがあれば何でも教えてくださいね��');
+        await message.channel.send('まだお話が浅いですが、気になることがあれば何でも教えてくださいね');
         return;
       }
       if (messages.length >= 3) {
