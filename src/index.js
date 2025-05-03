@@ -6,7 +6,7 @@ import { pickAction } from "./decision-engine.js";
 import { runPipeline, shouldContextuallyIntervene, buildHistoryContext } from "./action-runner.js";
 import { initSupabase } from './services/supabaseClient.js';
 import http from 'http';
-import { BOT_CHAT_CHANNEL, MAX_ACTIVE_TURNS, MAX_BOT_CONVO_TURNS, MAX_DAILY_RESPONSES, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END } from '../config/index.js';
+import { BOT_CHAT_CHANNEL, MAX_ACTIVE_TURNS, MAX_BOT_CONVO_TURNS, MAX_DAILY_RESPONSES, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END, EMERGENCY_STOP } from '../config/index.js';
 
 dotenv.config();
 
@@ -93,7 +93,10 @@ function isExplicitMention(message) {
 const channelHistories = new Map();
 const interventionCooldowns = new Map();
 // 直前の介入メッセージをチャンネルごとに記録
-const lastInterventions = new Map();
+let lastInterventions = new Map();
+
+// 自然介入のフォールバック送信済みチャネルを管理
+let fallbackSentChannels = new Set();
 
 // --- 追加: 介入後の積極応答モード管理 ---
 const activeConversationMap = new Map(); // channelId => { turns: number, lastUserId: string|null }
@@ -113,6 +116,11 @@ client.on("messageCreate", async (message) => {
   // --- 追加: 受信メッセージの詳細デバッグログ ---
   console.log('[DEBUG:messageCreate] content:', message.content, '\n  channelId:', message.channel?.id, '\n  guildId:', message.guild?.id, '\n  channelType:', message.channel?.type, '\n  username:', message.author?.username, '\n  isDM:', !message.guild, '\n  message.guild:', message.guild, '\n  message.channel.type:', message.channel?.type);
   if (message.author.bot && message.channel?.id !== BOT_CHAT_CHANNEL) return;
+  // 緊急停止フラグ: trueなら応答を停止するよ🚨
+  if (EMERGENCY_STOP) {
+    console.warn('[EMERGENCY STOP] 応答を停止中です');
+    return;
+  }
   // 日次リセット
   const today = getTodayDate();
   if (today !== dailyResetDate) {
@@ -183,7 +191,7 @@ client.on("messageCreate", async (message) => {
       }
     }
     // --- 文脈理解型の自然介入（新ロジック） ---
-    if (channelId && supabase) {
+    if (!message.author.bot && channelId && supabase) {
       const { data } = await supabase
         .from('conversation_histories')
         .select('messages')
