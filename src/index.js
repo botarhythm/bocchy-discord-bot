@@ -4,7 +4,7 @@ import { OpenAI } from "openai";
 import { detectFlags } from "./flag-detector.js";
 import { pickAction } from "./decision-engine.js";
 import { runPipeline, shouldContextuallyIntervene, buildHistoryContext } from "./action-runner.js";
-import { createClient } from '@supabase/supabase-js';
+import { initSupabase } from './services/supabaseClient.js';
 import http from 'http';
 import { BOT_CHAT_CHANNEL, MAX_ACTIVE_TURNS, MAX_BOT_CONVO_TURNS, MAX_DAILY_RESPONSES, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END } from '../config/index.js';
 
@@ -47,42 +47,8 @@ let settings = {
     : ["ニュース", "最新"]
 };
 
-// --- まとめ要望時のみ会話まとめを出力するロジック ---
-
-// Supabase連携（接続情報があれば有効化）
-let supabase = null;
-const SUPABASE_AUTO_MIGRATION = process.env.SUPABASE_AUTO_MIGRATION !== 'false';
-if (process.env.SUPABASE_URL && process.env.SUPABASE_KEY && SUPABASE_AUTO_MIGRATION) {
-  try {
-    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-    supabase
-      .channel('custom-all-channel')
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'bot_settings' },
-        payload => {
-          const { key, value } = payload.new;
-          if (key === 'INTERVENTION_QUERIES') {
-            settings.INTERVENTION_QUERIES = value.split(',').map(q => q.trim());
-          } else if (key === 'INTERVENTION_LEVEL') {
-            settings.INTERVENTION_LEVEL = parseInt(value) || settings.INTERVENTION_LEVEL;
-          } else {
-            settings[key] = value;
-          }
-          console.log(`Supabase設定が更新されました: ${key} = ${value}`);
-        }
-      )
-      .subscribe(status => {
-        if (status === 'SUBSCRIBED') {
-          console.log('Supabase連携が有効です');
-        }
-      });
-  } catch (e) {
-    console.warn('Supabase連携に失敗しました。環境変数のみで動作します。', e);
-  }
-} else {
-  console.log('Supabase連携なし。環境変数のみで動作します。');
-}
+// Supabaseクライアントを初期化するよ
+let supabase = initSupabase();
 
 function isInterventionQuery(message) {
   return settings.INTERVENTION_QUERIES.some(q => message.content.includes(q));
