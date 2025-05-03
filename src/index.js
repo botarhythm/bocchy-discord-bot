@@ -101,13 +101,8 @@ let fallbackSentChannels = new Set();
 // --- 追加: 介入後の積極応答モード管理 ---
 const activeConversationMap = new Map(); // channelId => { turns: number, lastUserId: string|null }
 
-// --- ボット同士会話モード設定 ---
-let botConvoCounts = new Map(); // channelId → bot会話ターン数
-let botConvoTimers = new Map();
-let dailyResponses = 0;
-let dailyResetDate = getTodayDate();
-// チャンネルごとのボット会話パートナーID管理
-let botConversationPartners = new Map(); // channelId → partnerBotId
+// --- ボットごとの会話管理 ---
+let botConvoState = new Map(); // botId => { turns, dailyCount, lastResetDate }
 
 /** 日本時間の今日の日付文字列(YYYY/MM/DD)を返す */
 function getTodayDate() {
@@ -115,246 +110,53 @@ function getTodayDate() {
 }
 
 client.on("messageCreate", async (message) => {
-  // --- 追加: 受信メッセージの詳細デバッグログ ---
-  console.log('[DEBUG:messageCreate] content:', message.content, '\n  channelId:', message.channel?.id, '\n  guildId:', message.guild?.id, '\n  channelType:', message.channel?.type, '\n  username:', message.author?.username, '\n  isDM:', !message.guild, '\n  message.guild:', message.guild, '\n  message.channel.type:', message.channel?.type);
-  // ボットメッセージのフィルタ: 自分のメッセージは無視、他ボットはBOT_CHAT_CHANNELのみ許可
-  if (message.author.bot) {
-    if (message.author.id === client.user.id) return;
-    if (message.channel?.id !== BOT_CHAT_CHANNEL) return;
-  }
-  // 緊急停止フラグ: trueならボットへの応答のみ停止するよ🚨
-  if (EMERGENCY_STOP && message.author.bot) {
-    console.warn('[EMERGENCY STOP] ボット応答を停止中です');
-    return;
-  }
-  // 日次リセット
-  const today = getTodayDate();
-  if (today !== dailyResetDate) {
-    dailyResetDate = today;
-    dailyResponses = 0;
-  }
+  const isBot = message.author.bot;
+  const isHuman = !isBot;
+  const botId = message.author.id;
   const channelId = message.channel?.id;
-  let debugInfo = {
-    timestamp: new Date().toISOString(),
-    userId: message.author.id,
-    username: message.author.username,
-    isDM: !message.guild,
-    content: message.content,
-    supabase: !!supabase,
-    openaiKey: !!process.env.OPENAI_API_KEY,
-    action: null,
-    flags: null,
-    error: null
-  };
-  // ボット同士応答（チャンネル固定）は先に処理
-  if (message.author.bot && channelId === BOT_CHAT_CHANNEL && message.author.id !== client.user.id) {
-    // デバッグログ: dailyResponsesとchannelIdを出力
-    console.log(`[bot-to-bot DEBUG] channelId=${channelId}, dailyResponses=${dailyResponses}`);
-    const partnerId = botConversationPartners.get(channelId);
-    if (!partnerId) {
-      botConversationPartners.set(channelId, message.author.id);
-      botConvoCounts.set(channelId, 0);
-    } else if (partnerId !== message.author.id) {
-      return;
-    }
-    const hour = getNowJST().getHours();
-    // 17時～22時のみ許可
-    if (hour < RESPONSE_WINDOW_START || hour >= RESPONSE_WINDOW_END) return;
-    // 日次上限チェック
-    if (dailyResponses >= MAX_DAILY_RESPONSES) return;
-    // ターン数制限
-    let turns = botConvoCounts.get(channelId) || 0;
-    if (turns >= MAX_BOT_CONVO_TURNS) {
-      // 会話終了: パートナーとカウントをリセット
-      botConversationPartners.delete(channelId);
-      botConvoCounts.delete(channelId);
-      return;
-    }
-    // カウント更新
-    botConvoCounts.set(channelId, turns + 1);
-    // 応答実行
+
+  // --- 人間の発言には必ず応答（BOT_CHAT_CHANNEL含む） ---
+  if (isHuman) {
+    // 通常のrunPipeline処理
     const flags = detectFlags(message, client);
     const action = pickAction(flags);
-    await runPipeline(action, { message, flags, supabase });
-    dailyResponses++;
-    return;
-  }
-  try {
-    // --- DM専用処理: 会話まとめまたはフォールバック応答 ---
-    if (!message.guild) {
-      // 会話まとめ要求
-      if (supabase && /まとめ|要約/.test(message.content)) {
-        const channelKey = 'DM';
-        const { data: sumData } = await supabase
-          .from('conversation_summaries')
-          .select('summary')
-          .eq('user_id', message.author.id)
-          .eq('channel_id', channelKey)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (sumData?.summary) {
-          await message.reply(`🔖 会話のまとめ:\n${sumData.summary}`);
-        } else {
-          await message.reply('まだまとめできるほどの会話履歴がありません。');
-        }
-      } else {
-        // DMフォールバック応答
-        const flags = detectFlags(message, client);
-        const action = pickAction(flags);
-        try {
-          await runPipeline(action, { message, flags, supabase });
-          console.log('[DM早期応答]', message.content);
-        } catch (err) {
-          console.error('[DM応答エラー]', err);
-        }
-      }
-      return;
-    }
-    // --- 追加: 介入後の積極応答モード判定 ---
-    if (!message.author.bot && channelId && activeConversationMap.has(channelId)) {
-      const state = activeConversationMap.get(channelId);
-      // ユーザーがボットの直前の返答に返事した場合はターン数リセット
-      if (state.lastUserId && message.author.id === state.lastUserId) {
-        state.turns = 0;
-        activeConversationMap.set(channelId, state);
-      } else {
-        state.turns++;
-        activeConversationMap.set(channelId, state);
-      }
-      // Nターン以内なら必ず返事（runPipelineで返答）
-      if (state.turns < MAX_ACTIVE_TURNS) {
-        const flags = detectFlags(message, client);
-        const action = pickAction(flags);
-        try {
-          await runPipeline(action, { message, flags, supabase });
-        } catch (err) {
-          console.error('[積極応答モードエラー]', err);
-        }
-        // 最後に返答したユーザーを記録
-        state.lastUserId = message.author.id;
-        activeConversationMap.set(channelId, state);
-        return;
-      } else {
-        // 一定ターン経過で積極応答モード解除
-        activeConversationMap.delete(channelId);
-      }
-    }
-    // --- サーバーチャンネルの強制介入判定 ---
-    if (!message.guild) {
-      if (shouldIntervene(message)) {
-        console.log(`[強制介入デバッグ] shouldIntervene=true: メッセージ: ${message.content}`);
-        const flags = detectFlags(message, client);
-        debugInfo.flags = flags;
-        const action = pickAction(flags);
-        debugInfo.action = action;
-        try {
-          await runPipeline(action, { message, flags, supabase });
-          console.log('[強制介入デバッグ] runPipeline実行: action=', action, 'flags=', flags);
-          // --- 追加: 自然介入後の積極応答モード開始 ---
-          activeConversationMap.set(channelId, { turns: 0, lastUserId: message.author.id });
-        } catch (err) {
-          debugInfo.error = err?.stack || err?.message || String(err);
-          console.error('[強制介入デバッグ] runPipelineエラー:', debugInfo);
-        }
-        return;
-      }
-    }
-    // --- 文脈理解型の自然介入（新ロジック） ---
-    if (!message.author.bot && channelId && supabase) {
-      const { data } = await supabase
-        .from('conversation_histories')
-        .select('messages')
-        .eq('channel_id', channelId)
-        .order('updated_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      const messages = data?.messages || [];
-      const lastIntervention = lastInterventions.get(channelId) || null;
-      // デバッグ: 文脈介入チェック状況を出力
-      const lastTime = interventionCooldowns.get(channelId) || 0;
-      console.log(`[自然介入チェック] channel=${channelId}, msgs=${messages.length}, lastIntervention=${lastIntervention}, cooldownMs=${Date.now() - lastTime}`);
-      // メッセージ数閾値の調整とフォールバック対応
-      if (messages.length < 3) {
-        console.log(`[自然介入スキップ] メッセージ数不足: msgs=${messages.length} (<3)`);
-        await message.channel.send('まだお話が浅いですが、気になることがあれば何でも教えてくださいね');
-        return;
-      }
-      if (messages.length >= 3) {
-        const intervention = await shouldContextuallyIntervene(messages, lastIntervention);
-        if (intervention) {
-          await message.channel.send(intervention);
-          lastInterventions.set(channelId, intervention);
-          interventionCooldowns.set(channelId, Date.now());
-          // --- 追加: 介入後は積極応答モードON ---
-          activeConversationMap.set(channelId, { turns: 0, lastUserId: message.author.id });
-          return;
-        }
-      }
-    }
-    // --- 既存の盛り上がり判定（自然介入/fallback: サーバーチャンネルのみ） ---
-    if (message.guild) {
-      if (!channelHistories.has(channelId)) channelHistories.set(channelId, []);
-      const history = channelHistories.get(channelId);
-      history.push(message);
-      if (history.length > 30) history.shift();
-      const excitementScore = await getExcitementScoreByAI(history);
-      console.log(`[自然介入デバッグ] チャンネルID: ${channelId}, 盛り上がりスコア: ${excitementScore}`);
-      const now = Date.now();
-      const last = interventionCooldowns.get(channelId) || 0;
-      const cooldownMs = getCooldownMsByAI(excitementScore);
-      if (now - last < cooldownMs) {
-        console.log(`[自然介入デバッグ] クールダウン中: 残り${((cooldownMs - (now - last))/1000).toFixed(1)}秒`);
-        return;
-      }
-      if (excitementScore >= 7) {
-        const intervention = await generateInterventionMessage(history);
-        console.log(`[自然介入デバッグ] 介入メッセージ送信: ${intervention}`);
-        await message.channel.send(intervention);
-        interventionCooldowns.set(channelId, now);
-      } else {
-        console.log(`[自然介入デバッグ] 介入せず（スコア${excitementScore} < 7）`);
-      }
-      return;
-    }
-    // --- DMまたは通常処理 ---
-    const flags = detectFlags(message, client);
-    debugInfo.flags = flags;
-    const action = pickAction(flags);
-    debugInfo.action = action;
-    if (message.guild) {
-      try {
-        await runPipeline(action, { message, flags, supabase });
-        console.log('[DMデバッグ情報]', debugInfo);
-      } catch (err) {
-        debugInfo.error = err?.stack || err?.message || String(err);
-        console.error('[DM自動デバッグエラー]', debugInfo);
-        await message.reply('エラーが発生しました。管理者にご連絡ください。');
-      }
-      return;
-    }
-    // 会話に人間が介入したらボット会話パートナーとカウントをリセット
-    if (channelId === BOT_CHAT_CHANNEL && !message.author.bot) {
-      botConversationPartners.delete(channelId);
-      botConvoCounts.delete(channelId);
-      if (botConvoTimers.has(channelId)) {
-        clearTimeout(botConvoTimers.get(channelId));
-        botConvoTimers.delete(channelId);
-      }
-      // 一定時間後に再度リセット
-      const tid = setTimeout(() => {
-        botConversationPartners.delete(channelId);
-        botConvoCounts.delete(channelId);
-      }, 10 * 60 * 1000);
-      botConvoTimers.set(channelId, tid);
-    }
-  } catch (e) {
-    debugInfo.error = e?.stack || e?.message || String(e);
-    if (message.guild) {
+    try {
+      await runPipeline(action, { message, flags, supabase });
+    } catch (err) {
+      console.error('[人間応答エラー]', err);
       await message.reply('エラーが発生しました。管理者にご連絡ください。');
     }
-    console.error('自動デバッグ全体エラー:', debugInfo);
+    // 介入時は全ボットのカウントをリセット
+    botConvoState.clear();
+    return;
   }
+
+  // --- ボット同士会話制御（BOT_CHAT_CHANNEL限定） ---
+  if (isBot && channelId === BOT_CHAT_CHANNEL && botId !== client.user.id) {
+    let state = botConvoState.get(botId) || { turns: 0, dailyCount: 0, lastResetDate: getTodayDate() };
+    // 日付が変わったらリセット
+    if (state.lastResetDate !== getTodayDate()) {
+      state.turns = 0;
+      state.dailyCount = 0;
+      state.lastResetDate = getTodayDate();
+    }
+    if (state.turns >= MAX_BOT_CONVO_TURNS || state.dailyCount >= MAX_DAILY_RESPONSES) return;
+    // 通常のrunPipeline処理
+    const flags = detectFlags(message, client);
+    const action = pickAction(flags);
+    try {
+      await runPipeline(action, { message, flags, supabase });
+    } catch (err) {
+      console.error('[ボット同士応答エラー]', err);
+    }
+    state.turns++;
+    state.dailyCount++;
+    botConvoState.set(botId, state);
+    return;
+  }
+
+  // --- それ以外のメッセージは無視 ---
+  return;
 });
 
 async function getExcitementScoreByAI(history) {
