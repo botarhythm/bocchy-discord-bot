@@ -103,6 +103,7 @@ const activeConversationMap = new Map(); // channelId => { turns: number, lastUs
 
 // --- ボットごとの会話管理 ---
 let botConvoState = new Map(); // botId => { turns, dailyCount, lastResetDate }
+let botSilenceUntil = null; // Date|null: 応答停止終了時刻
 
 /** 日本時間の今日の日付文字列(YYYY/MM/DD)を返す */
 function getTodayDate() {
@@ -115,9 +116,40 @@ client.on("messageCreate", async (message) => {
   const botId = message.author.id;
   const channelId = message.channel?.id;
 
+  // --- DMは常に通常応答 ---
+  if (!message.guild) {
+    const flags = detectFlags(message, client);
+    const action = pickAction(flags);
+    try {
+      await runPipeline(action, { message, flags, supabase });
+    } catch (err) {
+      console.error('[DM応答エラー]', err);
+      await message.reply('エラーが発生しました。管理者にご連絡ください。');
+    }
+    return;
+  }
+
+  // --- 応答停止中の解除判定（メンション時） ---
+  if (botSilenceUntil && message.mentions.has(client.user)) {
+    if (Date.now() < botSilenceUntil) {
+      botSilenceUntil = null;
+      await message.reply('森から帰ってきたよ🌲✨');
+      return;
+    }
+  }
+
+  // --- 応答停止中は何も返さない ---
+  if (botSilenceUntil && Date.now() < botSilenceUntil) return;
+
+  // --- 「静かに」コマンドで10分間応答停止 ---
+  if (/静かに/.test(message.content)) {
+    botSilenceUntil = Date.now() + 10 * 60 * 1000;
+    await message.reply('10分間森へ遊びに行ってきます…🌲');
+    return;
+  }
+
   // --- 人間の発言には必ず応答（BOT_CHAT_CHANNEL含む） ---
   if (isHuman) {
-    // 通常のrunPipeline処理
     const flags = detectFlags(message, client);
     const action = pickAction(flags);
     try {
@@ -126,22 +158,31 @@ client.on("messageCreate", async (message) => {
       console.error('[人間応答エラー]', err);
       await message.reply('エラーが発生しました。管理者にご連絡ください。');
     }
-    // 介入時は全ボットのカウントをリセット
     botConvoState.clear();
     return;
   }
 
   // --- ボット同士会話制御（BOT_CHAT_CHANNEL限定） ---
   if (isBot && channelId === BOT_CHAT_CHANNEL && botId !== client.user.id) {
+    const hour = getNowJST().getHours();
+    if (hour < RESPONSE_WINDOW_START || hour >= RESPONSE_WINDOW_END) {
+      console.log(`[b2b制限] 時間外: hour=${hour}`);
+      return;
+    }
     let state = botConvoState.get(botId) || { turns: 0, dailyCount: 0, lastResetDate: getTodayDate() };
-    // 日付が変わったらリセット
     if (state.lastResetDate !== getTodayDate()) {
       state.turns = 0;
       state.dailyCount = 0;
       state.lastResetDate = getTodayDate();
     }
-    if (state.turns >= MAX_BOT_CONVO_TURNS || state.dailyCount >= MAX_DAILY_RESPONSES) return;
-    // 通常のrunPipeline処理
+    if (state.turns >= 2) {
+      console.log(`[b2b制限] ターン上限: botId=${botId}, turns=${state.turns}`);
+      return;
+    }
+    if (state.dailyCount >= 10) {
+      console.log(`[b2b制限] 日次上限: botId=${botId}, dailyCount=${state.dailyCount}`);
+      return;
+    }
     const flags = detectFlags(message, client);
     const action = pickAction(flags);
     try {
@@ -152,6 +193,7 @@ client.on("messageCreate", async (message) => {
     state.turns++;
     state.dailyCount++;
     botConvoState.set(botId, state);
+    console.log(`[b2b進行] botId=${botId}, turns=${state.turns}, dailyCount=${state.dailyCount}, hour=${hour}`);
     return;
   }
 
