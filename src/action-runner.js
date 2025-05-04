@@ -384,9 +384,16 @@ export async function runPipeline(action, { message, flags, supabase }) {
       // --- 感情分析 ---
       const sentiment = await getSentiment(userPrompt);
       if (sentiment === 'negative') {
-        // 共感メッセージ: 表示名を優先して呼びかける
-        const displayName = getUserDisplayName(message);
-        reply = `${displayName}さん、つらい気持ちを聞かせてくれてありがとう。${reply}`;
+        // LLMで自然な共感フレーズを生成
+        const empathyPrompt = `次の発言に対して、自然な共感・受容の一言を日本語で生成してください。\n---\n${userPrompt}\n---\n`;
+        const empathyRes = await openai.chat.completions.create({
+          model: 'gpt-4o-mini-2024-07-18',
+          messages: [{ role: 'system', content: empathyPrompt }]
+        });
+        const empathyPhrase = empathyRes.choices[0]?.message?.content?.trim() || '';
+        if (empathyPhrase) {
+          reply = `${empathyPhrase}\n${reply}`;
+        }
       }
       // --- 自己反省チェック ---
       const reflection = await reflectiveCheck(userPrompt, reply);
