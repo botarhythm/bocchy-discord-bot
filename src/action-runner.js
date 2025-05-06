@@ -853,4 +853,82 @@ export async function shouldContextuallyIntervene(messages, lastIntervention = n
  */
 export function buildHistoryText(messages, n = 20) {
   return messages.slice(-n).map(m => `ユーザー: ${m.user}\nボッチー: ${m.bot}`).join("\n");
+}
+
+// 介入判定ロジック（トリガー/AI/確率）
+function shouldInterveneStrict(message, context = {}) {
+  // 1. 明示的トリガー
+  if (/ボッチー|Bocchy/i.test(message.content)) {
+    logInterventionDecision('explicit_trigger', message.content);
+    return true;
+  }
+  // 2. AI判定（LLMプロンプトで"本当に必要な時だけ介入"を明示）
+  if (context.aiInterventionResult && context.aiInterventionResult.intervene) {
+    logInterventionDecision('ai_context', message.content);
+    return true;
+  }
+  // 3. 確率判定（INTERVENTION_LEVEL=2）
+  const level = 2;
+  const result = Math.random() < level / 10;
+  logInterventionDecision('probability', message.content, { level, result });
+  return result;
+}
+
+// 介入後の会話フォロー（文脈・パーソナライズ重視）
+async function buildContextForFollowup(supabase, userId, channelId, guildId = null, guild = null) {
+  // 直近5件
+  const { data: hist } = await supabase
+    .from('conversation_histories')
+    .select('messages')
+    .eq('user_id', userId)
+    .eq('channel_id', channelId)
+    .maybeSingle();
+  const recent = (hist?.messages ?? []).slice(-5);
+  // 150字要約
+  const { data: sum } = await supabase
+    .from('conversation_summaries')
+    .select('summary')
+    .eq('user_id', userId)
+    .eq('channel_id', channelId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  // 相関サマリー
+  let guildSummary = null;
+  if (guildId) {
+    const { data: gsum } = await supabase
+      .from('guild_summaries')
+      .select('summary')
+      .eq('guild_id', guildId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    guildSummary = gsum?.summary || null;
+  }
+  // 最大公約数化パーソナライズ情報
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('profile_summary')
+    .eq('user_id', userId)
+    .limit(1)
+    .maybeSingle();
+  // プロンプト構成
+  const contextMsgs = [];
+  if (guildSummary) contextMsgs.push({ role: 'system', content: `[相関サマリー] ${guildSummary}` });
+  if (sum?.summary) contextMsgs.push({ role: 'system', content: `[要約] ${sum.summary}` });
+  if (profile?.profile_summary) contextMsgs.push({ role: 'system', content: `[パーソナライズ] ${profile.profile_summary}` });
+  for (const msg of recent) {
+    if (msg.content && /[？?]|help|困|教/.test(msg.content)) {
+      contextMsgs.push(msg);
+    }
+  }
+  // Token消費監視・自動圧縮
+  let totalTokens = contextMsgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
+  while (totalTokens > 2000 && contextMsgs.length > 1) {
+    contextMsgs.splice(1, 1); // system以外から古いものを削除
+    totalTokens = contextMsgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
+  }
+  // ログ出力
+  console.log('[CONTEXT_BUILD]', { totalTokens, contextMsgs });
+  return contextMsgs;
 } 
