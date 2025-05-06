@@ -54,21 +54,19 @@ function isInterventionQuery(message) {
   return settings.INTERVENTION_QUERIES.some(q => message.content.includes(q));
 }
 
-// 介入判定の統合関数
+// 介入判定の統合関数（トリガーと文脈フォローを分離）
 function shouldInterveneUnified(message, context = {}) {
   // 1. 明示的トリガー
-  if (isExplicitMention(message)) {
-    logInterventionDecision('explicit_mention', message);
+  if (isExplicitMention(message) || isInterventionQuery(message)) {
+    logInterventionDecision('explicit_mention_or_query', message);
+    // トリガー時のみ介入度で判定
     return Math.random() < settings.INTERVENTION_LEVEL / 10;
   }
-  if (isInterventionQuery(message)) {
-    logInterventionDecision('intervention_query', message);
-    return Math.random() < settings.INTERVENTION_LEVEL / 10;
-  }
-  // 2. AI文脈判定
+  // 2. 文脈フォロー（AI判定・長期記憶活用）
   if (context.aiInterventionResult && context.aiInterventionResult.intervene) {
-    logInterventionDecision('ai_context', message);
-    return Math.random() < settings.INTERVENTION_LEVEL / 10;
+    // 文脈フォロー時はAI・履歴・長期記憶を最大限活用し、確率でカットしない
+    logInterventionDecision('ai_contextual_follow', message);
+    return true;
   }
   // 3. 通常の介入度判定
   if (settings.INTERVENTION_LEVEL <= 0) return false;
