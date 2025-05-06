@@ -56,6 +56,10 @@ function buildCharacterPrompt(message, affinity = 0, userProfile = null, globalC
   if (userProfile && userProfile.preferences) {
     prompt += `【ユーザーの好み・傾向】${JSON.stringify(userProfile.preferences)}\n`;
   }
+  // --- 追加: 会話傾向・要望サマリー ---
+  if (userProfile && userProfile.profile_summary) {
+    prompt += `【会話傾向・要望】${userProfile.profile_summary}\n`;
+  }
   // --- 追加: 会話全体の感情トーン・主な話題 ---
   if (globalContext) {
     if (globalContext.tone) {
@@ -506,6 +510,8 @@ export async function runPipeline(action, { message, flags, supabase }) {
         await message.reply(answer);
         return;
       }
+      // --- 追加: 会話傾向・要望サマリーの自動更新 ---
+      if (supabase) await updateUserProfileSummaryFromHistory(supabase, message.author.id, 50);
       // --- ここから介入判定ロジック ---
       // 介入判定（明示トリガー/AI/確率）
       let guildId = message.guild ? message.guild.id : await resolveGuildId(message.client, message.author.id);
@@ -563,6 +569,8 @@ export async function runPipeline(action, { message, flags, supabase }) {
       return;
     } else if (action === "llm_only") {
       const userPrompt = message.content.replace(/<@!?\\d+>/g, "").trim();
+      // --- 追加: 会話傾向・要望サマリーの自動更新 ---
+      if (supabase) await updateUserProfileSummaryFromHistory(supabase, message.author.id, 50);
       let guildId = null;
       if (message.guild) {
         guildId = message.guild.id;
@@ -956,4 +964,31 @@ async function buildContextForFollowup(supabase, userId, channelId, guildId = nu
   // ログ出力
   console.log('[CONTEXT_BUILD]', { totalTokens, contextMsgs });
   return contextMsgs;
+}
+
+// --- ユーザー会話傾向・要望の自動要約・保存 ---
+/**
+ * ユーザーの会話履歴から傾向・要望を要約し、プロファイルに保存
+ * @param {object} supabase
+ * @param {string} userId
+ * @param {number} n 件数
+ */
+export async function updateUserProfileSummaryFromHistory(supabase, userId, n = 50) {
+  if (!supabase || !userId) return;
+  const { data: hist } = await supabase
+    .from('conversation_histories')
+    .select('messages')
+    .eq('user_id', userId)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const messages = (hist?.messages ?? []).slice(-n);
+  if (messages.length === 0) return;
+  const text = messages.map(m => `ユーザー: ${m.user}\nボット: ${m.bot}`).join('\n');
+  const summary = await llmRespond(
+    text,
+    'このユーザーの好み・よく使う話題・Botへの要望や指摘を100字以内で要約してください。',
+    null, [], ''
+  );
+  await supabase.from('user_profiles').update({ profile_summary: summary }).eq('user_id', userId);
 } 
