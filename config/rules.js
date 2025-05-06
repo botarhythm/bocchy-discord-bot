@@ -70,9 +70,9 @@ const mpcConfig = {
     pat: '[REDACTED]'
   },
   railway: {
-    projectId: 'fc1f7055-4259-4ab3-a455-7481cf981884',
-    environmentId: '11703836-4384-467b-815d-f99503f79f2d',
-    serviceId: '0cda408a-9799-4586-a162-90b1056ced87',
+    projectId: '13f5d497-6af5-4f86-9c71-1ac00d608a5c',
+    environmentId: '4e5d0a52-c99a-43b0-8bb7-4c1a0f25c4c3',
+    serviceId: '15793137-d605-4c2e-86b7-a233f188f5c3',
     apiToken: '[REDACTED]',
     publicUrl: 'botchi-discord-bot-production.up.railway.app'
   },
@@ -100,9 +100,19 @@ const githubInfo = {
   repo: 'bocchy-discord-bot'
 };
 
+// Railway MCP接続情報
+const RAILWAY_PROJECT_ID = '13f5d497-6af5-4f86-9c71-1ac00d608a5c';
+const RAILWAY_ENVIRONMENT_ID = '4e5d0a52-c99a-43b0-8bb7-4c1a0f25c4c3';
+const RAILWAY_SERVICE_ID = '15793137-d605-4c2e-86b7-a233f188f5c3';
+const RAILWAY_API_TOKEN = process.env.RAILWAY_API_TOKEN || '[REDACTED]';
+
 module.exports = {
   coreRules,
   bocchyRules,
   mpcConfig,
-  githubInfo
+  githubInfo,
+  RAILWAY_PROJECT_ID,
+  RAILWAY_ENVIRONMENT_ID,
+  RAILWAY_SERVICE_ID,
+  RAILWAY_API_TOKEN,
 }; 

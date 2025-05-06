@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 dotenv.config();
 import fetch from 'node-fetch';
+import { load } from 'cheerio';
 import { OpenAI } from 'openai';
 import yaml from 'js-yaml';
 import fs from 'fs';
@@ -204,7 +205,7 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null) 
   return msgs;
 }
 
-// ---- 1. googleSearch: フェイルセーフ & 正規URLのみ ----
+// ---- 1. googleSearch: 信頼性の高いサイトを優先しつつSNS/ブログも含める ----
 async function googleSearch(query, attempt = 0) {
   const apiKey = process.env.GOOGLE_API_KEY;
   const cseId = process.env.GOOGLE_CSE_ID;
@@ -223,10 +224,29 @@ async function googleSearch(query, attempt = 0) {
   if (!data.items || data.items.length === 0) {
     return [];
   }
-  return data.items
+  // 除外ドメインリスト（ログイン必須・リダイレクト・広告系のみ厳格除外）
+  const EXCLUDE_DOMAINS = [
+    'login', 'auth', 'accounts.google.com', 'ad.', 'ads.', 'doubleclick.net', 'googlesyndication.com'
+  ];
+  // 優先ドメインリスト（公式・教育・ニュース・自治体）
+  const PRIORITY_DOMAINS = [
+    'go.jp', 'ac.jp', 'ed.jp', 'nhk.or.jp', 'asahi.com', 'yomiuri.co.jp', 'mainichi.jp',
+    'nikkei.com', 'reuters.com', 'bloomberg.co.jp', 'news.yahoo.co.jp', 'city.', 'pref.', 'gkz.or.jp', 'or.jp', 'co.jp', 'jp', 'com', 'org', 'net'
+  ];
+  // SNS/ブログも候補に含める
+  const filtered = data.items
     .filter(i => /^https?:\/\//.test(i.link))
+    .filter(i => !EXCLUDE_DOMAINS.some(domain => i.link.includes(domain)))
+    .sort((a, b) => {
+      const aPriority = PRIORITY_DOMAINS.some(domain => a.link.includes(domain)) ? 2 :
+                        /twitter|x\.com|facebook|instagram|threads|note|blog|tiktok|line|pinterest|linkedin|youtube|discord/.test(a.link) ? 1 : 0;
+      const bPriority = PRIORITY_DOMAINS.some(domain => b.link.includes(domain)) ? 2 :
+                        /twitter|x\.com|facebook|instagram|threads|note|blog|tiktok|line|pinterest|linkedin|youtube|discord/.test(b.link) ? 1 : 0;
+      return bPriority - aPriority;
+    })
     .slice(0, MAX_ARTICLES)
     .map(i => ({ title: i.title, link: i.link, snippet: i.snippet }));
+  return filtered;
 }
 
 async function llmRespond(prompt, systemPrompt = "", message = null, history = [], charPrompt = null) {
@@ -283,6 +303,73 @@ function appendDateAndImpactWordsIfNeeded(userPrompt, query) {
   return newQuery.trim();
 }
 
+// ---- 新: ChatGPT風・自然なWeb検索体験 ----
+async function enhancedSearch(userPrompt, message, affinity, supabase) {
+  // 1) 検索クエリ生成
+  let searchQuery = await llmRespond(userPrompt, queryGenSystemPrompt, message, [], buildCharacterPrompt(message, affinity));
+  searchQuery = appendDateAndImpactWordsIfNeeded(userPrompt, searchQuery);
+  // 2) 検索実行
+  let results = await googleSearch(searchQuery);
+  if (results.length < 2) {
+    const altQuery = searchQuery + ' 事例 とは';
+    results = results.concat(await googleSearch(altQuery));
+  }
+  // 3) ページ取得＆テキスト抽出 or スニペット利用
+  let pageContents = await Promise.all(
+    results.map(async r => {
+      try {
+        const res = await fetch(r.link, { timeout: 10000 });
+        const html = await res.text();
+        const $ = load(html);
+        let text = $('p').slice(0,5).map((i,el) => $(el).text()).get().join('\n');
+        if (!text.trim()) text = r.snippet || '';
+        return { title: r.title, text, link: r.link, snippet: r.snippet };
+      } catch {
+        return { title: r.title, text: r.snippet || '', link: r.link, snippet: r.snippet };
+      }
+    })
+  );
+  // 4) LLMで関連度判定し、低いものは除外
+  const relPrompt = (query, title, snippet) =>
+    `ユーザーの質問:「${query}」\n検索結果タイトル:「${title}」\nスニペット:「${snippet}」\nこの検索結果は質問に直接関係していますか？関係が深い場合は「はい」、そうでなければ「いいえ」とだけ返答してください。`;
+  const relChecks = await Promise.all(
+    pageContents.map(async pg => {
+      const rel = await llmRespond(userPrompt, relPrompt(userPrompt, pg.title, pg.snippet));
+      return rel.trim().startsWith('はい');
+    })
+  );
+  pageContents = pageContents.filter((pg, i) => relChecks[i]);
+  // 5) ChatGPT風の回答テンプレート
+  if (pageContents.length === 0 || pageContents.every(pg => !pg.text.trim())) {
+    // 検索で見つからなかった場合、LLMで一般知識・推論回答を生成
+    const fallbackPrompt = `Web検索では直接的な情報が見つかりませんでしたが、一般的な知識や推論でお答えします。\n\n質問: ${userPrompt}`;
+    const fallbackAnswer = await llmRespond(userPrompt, fallbackPrompt, message, [], buildCharacterPrompt(message, affinity));
+    return { answer: fallbackAnswer, results: [] };
+  }
+  const docs = pageContents.map((pg,i) => `【${i+1}】${pg.title}\n${pg.text}\nURL: ${pg.link}`).join('\n\n');
+  const urlList = pageContents.map((pg,i) => `【${i+1}】${pg.title}\n${pg.link}`).join('\n');
+  const systemPrompt =
+    `あなたはWeb検索アシスタントです。以下の検索結果を参考に、ユーザーの質問「${userPrompt}」に日本語で分かりやすく回答してください。` +
+    `\n\n【検索結果要約】\n${docs}\n\n【参考URLリスト】\n${urlList}\n\n` +
+    `・信頼できる情報源を優先し、事実ベースで簡潔にまとめてください。\n・必要に応じて参考URLを文中で引用してください。`;
+  let answer = await llmRespond(userPrompt, systemPrompt, message, [], buildCharacterPrompt(message, affinity));
+  answer += `\n\n【出典URL】\n` + pageContents.map((pg,i) => `【${i+1}】${pg.link}`).join('\n');
+  if (supabase) await saveHistory(supabase, message, `[検索クエリ] ${searchQuery}`, docs, affinity);
+  return { answer, results: pageContents };
+}
+
+// サーバーメンバー名リスト取得関数
+async function getGuildMemberNames(guild, max = 20) {
+  await guild.members.fetch(); // キャッシュに全員をロード
+  const members = Array.from(guild.members.cache.values())
+    .slice(0, max)
+    .map(m => {
+      const name = m.displayName || m.user.globalName || m.user.username;
+      return m.user.bot ? `${name}（Bot）` : name;
+    });
+  return members;
+}
+
 export async function runPipeline(action, { message, flags, supabase }) {
   const guildId = message.guild?.id || 'DM';
   const affinity = supabase
@@ -311,36 +398,90 @@ export async function runPipeline(action, { message, flags, supabase }) {
       console.debug('[runPipeline] 履歴プロンプト生成:', historyPrompt);
     }
 
-    if (action === "search_only" || action === "combined") {
-      const userPrompt = message.content.replace(/<@!?\\d+>/g, "").trim();
-      let searchQuery = await llmRespond(userPrompt, queryGenSystemPrompt, message, [], buildCharacterPrompt(message, affinity));  // 履歴混入を防止
-      searchQuery = appendDateAndImpactWordsIfNeeded(userPrompt, searchQuery);
-      let results = await googleSearch(searchQuery);
-      if (results.length < 2) {
-        // 1回だけキーワード拡張で再検索
-        const altQuery = searchQuery + ' 事例 とは';
-        results = results.concat(await googleSearch(altQuery));
+    // --- サーバーメンバー名リストアップ質問の判定（最優先） ---
+    const memberListPatterns = [
+      /サーバー(の|にいる)?メンバー(を|教えて|一覧|だれ|誰|list|list up|リスト|名前|ネーム)/i,
+      /このチャンネル(の|にいる)?メンバー(を|教えて|一覧|だれ|誰|list|list up|リスト|名前|ネーム)/i,
+      /メンバー(一覧|リスト|だれ|誰|教えて|名前|ネーム)/i,
+      /ログインしている(人|メンバー|ユーザー|ユーザ|名前|ネーム)/i,
+      /参加している(人|メンバー|ユーザー|ユーザ|名前|ネーム)/i,
+      /いる(人|メンバー|ユーザー|ユーザ|名前|ネーム)/i,
+      /オンライン(の)?(人|メンバー|ユーザー|ユーザ|名前|ネーム)/i,
+      /active( user| member| name| list)?/i,
+      /在籍(している)?(人|メンバー|ユーザー|ユーザ|名前|ネーム)/i,
+      /connected( user| member| name| list)?/i,
+      /who (is|are) (in|on|logged in|online|connected to) (this )?(server|guild|channel)/i
+    ];
+    const userPrompt = message.content.replace(/<@!?\\d+>/g, "").trim();
+    if (message.guild && memberListPatterns.some(re => re.test(userPrompt))) {
+      const names = await getGuildMemberNames(message.guild, 20);
+      let reply = '';
+      if (names.length === 0) {
+        reply = 'このサーバーにはまだメンバーがいません。';
+      } else {
+        reply = `このサーバーの主なメンバーは：\n${names.map(n => `・${n}`).join('\n')}`;
+        if (message.guild.memberCount > names.length) {
+          reply += `\n他にも${message.guild.memberCount - names.length}名が在籍しています。`;
+        }
       }
-      if (results.length < 2) {
-        await message.reply('🔍 検索結果が少なかったため、再検索＆AI補足を行いました。');
-        const aiNote = await llmRespond(
-          userPrompt + ' これを一般知識のみで150字以内で補足してください',
-          '', message, [], buildCharacterPrompt(message, affinity));
-        return await message.channel.send(aiNote);
+      await message.reply(reply);
+      if (supabase) await saveHistory(supabase, message, userPrompt, reply, 0);
+      return;
+    }
+
+    if (action === "search_only") {
+      // high-precision search with LLM
+      const { answer, results } = await enhancedSearch(userPrompt, message, affinity, supabase);
+      await message.reply(answer);
+      if (supabase) await saveHistory(supabase, message, userPrompt, answer, affinity);
+      return;
+    } else if (action === "combined") {
+      // --- ここから分岐ロジック追加 ---
+      // 1. 検索依頼ワード・時事性ワードの簡易判定
+      const searchWords = [
+        /調べて|検索して|検索|webで|ウェブで|ニュース|最新|天気|速報|イベント|開催|今日|昨日|明日|今年|今年度|今年の|今年の|今年度の|今年度|\d{4}年/,
+      ];
+      const needsSearch = searchWords.some(re => re.test(userPrompt));
+      let doSearch = needsSearch;
+      // 2. 曖昧な場合はLLMで判定
+      if (!needsSearch) {
+        const judgePrompt = `ユーザーの質問:「${userPrompt}」\nこの質問はWeb検索（Google検索など）を使わないと正確に答えられない内容ですか？\n「はい」または「いいえ」だけで答えてください。`;
+        const judge = await llmRespond(userPrompt, judgePrompt, message, [], buildCharacterPrompt(message, affinity));
+        doSearch = judge.trim().startsWith('はい');
       }
-      // ---- 3. LLM 要約を並列化（Promise.all） ----
-      const summaries = await Promise.all(
-        results.map(r => llmRespond(
-          `この記事を 90 字以内で要約し末尾に URL を残してください。\n${r.title}\n${r.snippet}`,
-          '', message, [], buildCharacterPrompt(message, affinity)))
-      );
-      // ---- 4. 結果フォーマットを必ず URL 付きで出力 ----
-      const output = summaries
-        .map((s,i)=>`### ${i+1}. ${results[i].title}\n${s}\n[リンク](${results[i].link})`)
-        .join('\n\n');
-      await message.reply(`【検索まとめ ${results.length}件】\n` + output);
-      if (supabase) {
-        await saveHistory(supabase, message, userPrompt, output, affinity);
+      if (doSearch) {
+        const { answer } = await enhancedSearch(userPrompt, message, affinity, supabase);
+        await message.reply(answer);
+      } else {
+        // LLMのみで即答
+        let guildId = null;
+        if (message.guild) {
+          guildId = message.guild.id;
+        } else {
+          guildId = await resolveGuildId(message.client, message.author.id);
+        }
+        let historyMsgs = await buildHistoryContext(supabase, message.author.id, message.guild ? message.channel.id : 'DM', guildId);
+        let userProfile = null, globalContext = null;
+        for (const m of historyMsgs) {
+          if (m.role === 'system' && m.content.startsWith('【ユーザープロファイル】')) {
+            try { userProfile = JSON.parse(m.content.replace('【ユーザープロファイル】','').trim()); } catch(e){}
+          }
+          if (m.role === 'system' && m.content.startsWith('【会話全体要約】')) {
+            globalContext = globalContext || {};
+            globalContext.summary = m.content.replace('【会話全体要約】','').trim();
+          }
+          if (m.role === 'system' && m.content.startsWith('【主な話題】')) {
+            globalContext = globalContext || {};
+            globalContext.topics = m.content.replace('【主な話題】','').split('、').map(s=>s.trim()).filter(Boolean);
+          }
+          if (m.role === 'system' && m.content.startsWith('【全体トーン】')) {
+            globalContext = globalContext || {};
+            globalContext.tone = m.content.replace('【全体トーン】','').trim();
+          }
+        }
+        let reply = await llmRespond(userPrompt, '', message, historyMsgs, buildCharacterPrompt(message, affinity, userProfile, globalContext));
+        await message.reply({ content: reply, allowedMentions: { repliedUser: false } });
+        if (supabase) await saveHistory(supabase, message, userPrompt, reply, affinity);
       }
       return;
     } else if (action === "llm_only") {

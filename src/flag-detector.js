@@ -9,7 +9,13 @@ export function detectFlags(message, client) {
     /webで調べて.+/i,
     /ウェブで調べて.+/i,
     /ニュース/i,
-    /最新/i
+    /最新/i,
+    /調べて/i,
+    /教えて/i,
+    /について(教えて|知りたい|調べて)/i,
+    /.+(とは|って何|ってなに|何ですか|なにそれ|どんなもの)/i,
+    /[？?]$/,
+    /検索/i
   ];
   if (searchRegexes.some(r => r.test(message.content))) {
     flags.search = true;

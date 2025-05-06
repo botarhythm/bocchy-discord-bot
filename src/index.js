@@ -41,10 +41,10 @@ client.once("ready", () => {
 
 // 設定の初期化
 let settings = {
-  INTERVENTION_LEVEL: parseInt(process.env.INTERVENTION_LEVEL) || 2,
+  INTERVENTION_LEVEL: parseInt(process.env.INTERVENTION_LEVEL) || 4,
   INTERVENTION_QUERIES: process.env.INTERVENTION_QUERIES
     ? process.env.INTERVENTION_QUERIES.split(',').map(q => q.trim())
-    : ["ニュース", "最新"]
+    : ["ニュース", "最新", "困った", "教えて"]
 };
 
 // Supabaseクライアントを初期化するよ（settingsを渡すことで設定購読が動作するよ）
@@ -54,14 +54,32 @@ function isInterventionQuery(message) {
   return settings.INTERVENTION_QUERIES.some(q => message.content.includes(q));
 }
 
-function shouldIntervene(message) {
-  // DMまたは@メンション時は必ず返答
-  if (!message.guild) return true;
-  if (isExplicitMention(message)) return true;
-  if (isInterventionQuery(message)) return true;
+// 介入判定の統合関数
+function shouldInterveneUnified(message, context = {}) {
+  // 1. 明示的トリガー
+  if (isExplicitMention(message)) {
+    logInterventionDecision('explicit_mention', message);
+    return Math.random() < settings.INTERVENTION_LEVEL / 10;
+  }
+  if (isInterventionQuery(message)) {
+    logInterventionDecision('intervention_query', message);
+    return Math.random() < settings.INTERVENTION_LEVEL / 10;
+  }
+  // 2. AI文脈判定
+  if (context.aiInterventionResult && context.aiInterventionResult.intervene) {
+    logInterventionDecision('ai_context', message);
+    return Math.random() < settings.INTERVENTION_LEVEL / 10;
+  }
+  // 3. 通常の介入度判定
   if (settings.INTERVENTION_LEVEL <= 0) return false;
   if (settings.INTERVENTION_LEVEL >= 10) return true;
-  return Math.random() < settings.INTERVENTION_LEVEL / 10;
+  const result = Math.random() < settings.INTERVENTION_LEVEL / 10;
+  if (result) logInterventionDecision('random', message);
+  return result;
+}
+
+function logInterventionDecision(reason, message) {
+  console.log(`[介入判定] reason=${reason}, user=${message.author?.username}, content=${message.content}`);
 }
 
 function logMetric(metricName, value) {
