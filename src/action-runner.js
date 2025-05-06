@@ -73,7 +73,7 @@ const SHORT_TURNS   = 8;   // ← 直近 8 往復だけ詳細（元は4）
 const MAX_ARTICLES  = 3;
 
 // ---------- A.  summary を取ってシステムに渡すヘルパ ----------
-async function buildHistoryContext(supabase, userId, channelId, guildId = null) {
+async function buildHistoryContext(supabase, userId, channelId, guildId = null, guild = null) {
   if (!supabase) return [];
   // 1) 直近詳細 n＝SHORT_TURNS（チャンネル単位）
   const { data: hist } = await supabase
@@ -161,6 +161,14 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null) 
     globalContext = await analyzeGlobalContext(allHistory);
   } catch (e) { globalContext = null; }
 
+  // 7) 参加者情報の取得
+  let memberNames = [];
+  if (guild) {
+    try {
+      memberNames = await getGuildMemberNames(guild, 20);
+    } catch (e) { memberNames = []; }
+  }
+
   // --- 取得状況を詳細デバッグ出力 ---
   console.log('[DEBUG:buildHistoryContext]', {
     userId,
@@ -172,7 +180,8 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null) 
     guildRecent,
     userProfile,
     personalizedHistory,
-    globalContext
+    globalContext,
+    memberNames
   });
   // --- 実際にプロンプトに含まれる履歴(messages)を詳細出力 ---
   const msgs = [];
@@ -185,6 +194,9 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null) 
     msgs.push({ role: 'system', content: `【全体トーン】${globalContext.tone}` });
   }
   if (guildSummary) msgs.push({ role: 'system', content: `【サーバー全体要約】${guildSummary}` });
+  if (memberNames.length > 0) {
+    msgs.push({ role: 'system', content: `【現在の参加者】${memberNames.join('、')}` });
+  }
   guildRecent.forEach(t => {
     msgs.push({ role: 'user', content: t.user });
     msgs.push({ role: 'assistant', content: t.bot });
@@ -460,7 +472,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
         } else {
           guildId = await resolveGuildId(message.client, message.author.id);
         }
-        let historyMsgs = await buildHistoryContext(supabase, message.author.id, message.guild ? message.channel.id : 'DM', guildId);
+        let historyMsgs = await buildHistoryContext(supabase, message.author.id, message.guild ? message.channel.id : 'DM', guildId, message.guild);
         let userProfile = null, globalContext = null;
         for (const m of historyMsgs) {
           if (m.role === 'system' && m.content.startsWith('【ユーザープロファイル】')) {
@@ -494,7 +506,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
         guildId = await resolveGuildId(message.client, message.author.id);
         console.log('[DEBUG] DM: guildId 解決結果 =', guildId);
       }
-      let historyMsgs = await buildHistoryContext(supabase, message.author.id, channelKey, guildId);
+      let historyMsgs = await buildHistoryContext(supabase, message.author.id, channelKey, guildId, message.guild);
       let userProfile = null, globalContext = null;
       for (const m of historyMsgs) {
         if (m.role === 'system' && m.content.startsWith('【ユーザープロファイル】')) {
