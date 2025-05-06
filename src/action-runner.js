@@ -97,6 +97,7 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null, 
   // 3) サーバー全体の要約・履歴も取得
   let guildSummary = null;
   let guildRecent = [];
+  let guildAllMessages = [];
   if (guildId) {
     const { data: gsum } = await supabase
       .from('conversation_summaries')
@@ -112,9 +113,10 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null, 
       .select('messages')
       .eq('guild_id', guildId)
       .order('updated_at', { ascending: false })
-      .limit(1)
+      .limit(10)
       .maybeSingle();
     guildRecent = (ghist?.messages ?? []).slice(-2); // 直近2往復だけ
+    guildAllMessages = (ghist?.messages ?? []);
   }
 
   // 4) ユーザープロファイル取得
@@ -169,6 +171,40 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null, 
     } catch (e) { memberNames = []; }
   }
 
+  // 8) ユーザー相関関係サマリーの生成
+  let correlationSummary = '';
+  try {
+    // ユーザー間のやり取り頻度・共通話題を簡易集計
+    const userPairCounts = {};
+    const topicCounts = {};
+    for (let i = 0; i < guildAllMessages.length - 1; i++) {
+      const m1 = guildAllMessages[i];
+      const m2 = guildAllMessages[i+1];
+      if (m1.user && m2.user) {
+        const pair = `${m1.user}↔${m2.user}`;
+        userPairCounts[pair] = (userPairCounts[pair] || 0) + 1;
+      }
+      // 話題抽出（単純にキーワード頻度で）
+      const words = (m1.user + ' ' + m1.bot).split(/\s+/);
+      for (const w of words) {
+        if (w.length > 1) topicCounts[w] = (topicCounts[w] || 0) + 1;
+      }
+    }
+    // 上位のやり取りペア
+    const topPairs = Object.entries(userPairCounts)
+      .sort((a,b) => b[1]-a[1])
+      .slice(0,5)
+      .map(([pair, count]) => `・${pair}（${count}回）`)
+      .join('\n');
+    // 上位の話題
+    const topTopics = Object.entries(topicCounts)
+      .sort((a,b) => b[1]-a[1])
+      .slice(0,5)
+      .map(([topic, count]) => `#${topic}（${count}回）`)
+      .join(' ');
+    correlationSummary = `【サーバー内ユーザー相関サマリー】\n${topPairs}\n【共通話題】${topTopics}`;
+  } catch (e) { correlationSummary = ''; }
+
   // --- 取得状況を詳細デバッグ出力 ---
   console.log('[DEBUG:buildHistoryContext]', {
     userId,
@@ -181,7 +217,8 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null, 
     userProfile,
     personalizedHistory,
     globalContext,
-    memberNames
+    memberNames,
+    correlationSummary
   });
   // --- 実際にプロンプトに含まれる履歴(messages)を詳細出力 ---
   const msgs = [];
@@ -196,6 +233,9 @@ async function buildHistoryContext(supabase, userId, channelId, guildId = null, 
   if (guildSummary) msgs.push({ role: 'system', content: `【サーバー全体要約】${guildSummary}` });
   if (memberNames.length > 0) {
     msgs.push({ role: 'system', content: `【現在の参加者】${memberNames.join('、')}` });
+  }
+  if (correlationSummary) {
+    msgs.push({ role: 'system', content: correlationSummary });
   }
   guildRecent.forEach(t => {
     msgs.push({ role: 'user', content: t.user });
