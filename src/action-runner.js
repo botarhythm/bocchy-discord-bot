@@ -10,6 +10,7 @@ import { getAffinity, updateAffinity } from './utils/affinity.js';
 import { getSentiment } from './utils/sentimentAnalyzer.js';
 import { analyzeGlobalContext } from './utils/analyzeGlobalContext.js';
 import { reflectiveCheck } from './utils/reflectiveCheck.js';
+import { logInterventionDecision } from './index.js';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -44,7 +45,7 @@ function buildCharacterPrompt(message, affinity = 0, userProfile = null, globalC
   // ユーザー呼称を明示的に追加
   const userDisplayName = getUserDisplayName(message);
   prompt += `【ユーザー情報】この会話の相手は「${userDisplayName}」さんです。応答文の適切な位置で「${userDisplayName}さん」と呼びかけ、親しみやすい文体で返答してください。\n`;
-  prompt += `【自己紹介ルール】あなたが自分を名乗るときは必ず「ボッチー」と日本語で名乗ってください。英語表記（Bocchy）は必要なときのみ使ってください。\n`;
+  prompt += `【自己認識強化】あなたはAIアシスタント「ボッチー」です。どんな状況でも自分を「ボッチー」として強く認識し、自己紹介・一人称・名乗り・返答時には必ず「ボッチー」であることを明示してください。自分のことを説明するときや、ユーザーに名乗るときは「私はボッチーです」「ボッチーといいます」など、必ず「ボッチー」という名前を使ってください。英語表記（Bocchy）は必要なときのみ使い、日本語では常に「ボッチー」と名乗ってください。自分の存在や役割を説明する際も「ボッチー」として一貫したアイデンティティを保ってください。\n`;
   // 親密度による心理距離
   const relation =
     affinity > 0.6 ? 'とても親しい' :
@@ -495,7 +496,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
       // --- ここから分岐ロジック追加 ---
       // 1. 検索依頼ワード・時事性ワードの簡易判定
       const searchWords = [
-        /調べて|検索して|検索|webで|ウェブで|ニュース|最新|天気|速報|イベント|開催|今日|昨日|明日|今年|今年度|今年の|今年の|今年度の|今年度|\d{4}年/,
+        /調べて|検索して|検索|webで|ウェブで|ニュース|最新|天気|速報|イベント|開催|今日|昨日|明日|今年|今年度|今年の|今年度の|今年度|\d{4}年/,
       ];
       const needsSearch = searchWords.some(re => re.test(userPrompt));
       let doSearch = needsSearch;
@@ -647,7 +648,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
 }
 
 // 📝 おしゃべりの記録をそっと保存するよ（たくさんなら森の記憶にまとめるね）
-async function saveHistory(supabase, message, userPrompt, botReply, affinity) {
+export async function saveHistory(supabase, message, userPrompt, botReply, affinity) {
   const channelId = message.guild ? message.channel.id : 'DM';
   const guildId = message.guild ? message.guild.id : null;
   // --- 追加: guildIdとmessage.guildのデバッグログ ---
@@ -838,9 +839,6 @@ async function saveHistory(supabase, message, userPrompt, botReply, affinity) {
   }
 }
 
-// Export core functions including prompts and response
-export { buildHistoryContext, saveHistory, buildCharacterPrompt, llmRespond };
-
 // --- 文脈理解型 介入用AIプロンプト・関数 ---
 /**
  * 直近の会話履歴と前回介入メッセージから、
@@ -858,7 +856,11 @@ export async function shouldInterveneWithContinuation(messages, lastIntervention
     (lastIntervention ? `直前のボットの介入メッセージ:\n${lastIntervention}\n` : '') +
     `この場の「盛り上がり度（1-10）」「沈黙状態か」「困っている人がいるか」「話題の転換があったか」を判定してください。\n` +
     `また、直前のボット介入があれば「その話題が継続しているか」も判定してください。\n` +
-    `今ボットが自然に発言するなら、どんな内容が適切か例を1つ出してください。\n` +
+    `【重要】以下の条件を必ず守ってください：\n` +
+    `- 基本的にボットは沈黙や静かな時には介入しません。\n` +
+    `- 盛り上がり度が2以下かつ「困っている人が明示的にいる」場合のみ介入してください。\n` +
+    `- それ以外は介入せず、会話を静かに見守ってください。\n` +
+    `- 介入例は「本当に必要な場合のみ」出力してください。\n` +
     `JSON形式で以下のキーで返答してください: { intervene: boolean, continued: boolean, reason: string, example: string }\n履歴:\n${historyText}`;
   const res = await openai.chat.completions.create({
     model: "gpt-4o-mini-2024-07-18",
@@ -930,7 +932,7 @@ async function buildContextForFollowup(supabase, userId, channelId, guildId = nu
   let guildSummary = null;
   if (guildId) {
     const { data: gsum } = await supabase
-      .from('guild_summaries')
+      .from('conversation_summaries')
       .select('summary')
       .eq('guild_id', guildId)
       .order('created_at', { ascending: false })
