@@ -79,6 +79,7 @@ function shouldInterveneUnified(message, context = {}) {
 function logInterventionDecision(reason, message) {
   console.log(`[介入判定] reason=${reason}, user=${message.author?.username}, content=${message.content}`);
 }
+export { logInterventionDecision };
 
 function logMetric(metricName, value) {
   console.log(`[メトリクス] ${metricName}: ${value}`);
@@ -261,3 +262,4 @@ http.createServer((req, res) => {
 }).listen(port, () => {
   console.log(`[HealthCheck] HTTPサーバー起動: ポート${port}`);
 });
+
