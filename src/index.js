@@ -12,9 +12,39 @@ dotenv.config();
 
 process.on('unhandledRejection', (reason, p) => {
   console.error('[UNHANDLED REJECTION]', reason);
+  if (reason && reason.stack) {
+    console.error('[STACK TRACE]', reason.stack);
+  }
+  // 追加: 環境情報・起動引数・バージョン
+  console.error('[DEBUG:ENV]', {
+    NODE_ENV: process.env.NODE_ENV,
+    BOT_ENABLED: process.env.BOT_ENABLED,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY ? '***' : undefined,
+    GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ? '***' : undefined,
+    GOOGLE_CSE_ID: process.env.GOOGLE_CSE_ID ? '***' : undefined,
+    RAILWAY_ENV: process.env.RAILWAY_ENV,
+    argv: process.argv,
+    cwd: process.cwd(),
+    version: process.version
+  });
 });
 process.on('uncaughtException', (err) => {
   console.error('[UNCAUGHT EXCEPTION]', err);
+  if (err && err.stack) {
+    console.error('[STACK TRACE]', err.stack);
+  }
+  // 追加: 環境情報・起動引数・バージョン
+  console.error('[DEBUG:ENV]', {
+    NODE_ENV: process.env.NODE_ENV,
+    BOT_ENABLED: process.env.BOT_ENABLED,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY ? '***' : undefined,
+    GOOGLE_API_KEY: process.env.GOOGLE_API_KEY ? '***' : undefined,
+    GOOGLE_CSE_ID: process.env.GOOGLE_CSE_ID ? '***' : undefined,
+    RAILWAY_ENV: process.env.RAILWAY_ENV,
+    argv: process.argv,
+    cwd: process.cwd(),
+    version: process.version
+  });
 });
 
 if (process.env.BOT_ENABLED !== "true") {
