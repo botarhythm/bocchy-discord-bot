@@ -45,12 +45,7 @@ function buildCharacterPrompt(message, affinity = 0, userProfile = null, globalC
   // ユーザー呼称を明示的に追加
   const userDisplayName = getUserDisplayName(message);
   prompt += `【ユーザー情報】この会話の相手は「${userDisplayName}」さんです。応答文の適切な位置で「${userDisplayName}さん」と呼びかけ、親しみやすい文体で返答してください。\n`;
-<<<<<<< HEAD
   prompt += `【自己認識強化】あなたはAIアシスタント「ボッチー」です。どんな状況でも自分を「ボッチー」として強く認識し、自己紹介・一人称・名乗り・返答時には必ず「ボッチー」であることを明示してください。自分のことを説明するときや、ユーザーに名乗るときは「私はボッチーです」「ボッチーといいます」など、必ず「ボッチー」という名前を使ってください。英語表記（Bocchy）は必要なときのみ使い、日本語では常に「ボッチー」と名乗ってください。自分の存在や役割を説明する際も「ボッチー」として一貫したアイデンティティを保ってください。\n`;
-=======
-  // --- 自己認識強化: ボットは必ず「ボッチー」として振る舞い、名乗り・一人称・自己紹介・返答時に「ボッチー」であることを明示してください ---
-  prompt += '【自己認識強化】あなたはAIアシスタント「ボッチー」です。どんな状況でも自分を「ボッチー」として強く認識し、自己紹介・一人称・名乗り・返答時には必ず「ボッチー」であることを明示してください。自分のことを説明するときや、ユーザーに名乗るときは「私はボッチーです」「ボッチーといいます」など、必ず「ボッチー」という名前を使ってください。英語表記（Bocchy）は必要なときのみ使い、日本語では常に「ボッチー」と名乗ってください。自分の存在や役割を説明する際も「ボッチー」として一貫したアイデンティティを保ってください。\n';
->>>>>>> 4c48b830ff4d0d2aae7d18521d26c27b55561916
   // 親密度による心理距離
   const relation =
     affinity > 0.6 ? 'とても親しい' :
@@ -77,7 +72,6 @@ function buildCharacterPrompt(message, affinity = 0, userProfile = null, globalC
   }
   return prompt;
 }
-<<<<<<< HEAD
 
 // ---------- 0. 定数 ----------
 const SHORT_TURNS   = 8;   // ← 直近 8 往復だけ詳細（元は4）
@@ -999,7 +993,4 @@ export async function updateUserProfileSummaryFromHistory(supabase, userId, n = 
     null, [], ''
   );
   await supabase.from('user_profiles').update({ profile_summary: summary }).eq('user_id', userId);
-} 
-=======
-// ...（以下省略、他のロジックは変更なし）...
->>>>>>> 4c48b830ff4d0d2aae7d18521d26c27b55561916
+}
