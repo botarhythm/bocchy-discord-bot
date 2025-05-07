@@ -78,7 +78,7 @@ const SHORT_TURNS   = 8;   // ← 直近 8 往復だけ詳細（元は4）
 const MAX_ARTICLES  = 3;
 
 // ---------- A.  summary を取ってシステムに渡すヘルパ ----------
-async function buildHistoryContext(supabase, userId, channelId, guildId = null, guild = null) {
+export async function buildHistoryContext(supabase, userId, channelId, guildId = null, guild = null) {
   if (!supabase) return [];
   // 1) 直近詳細 n＝SHORT_TURNS（チャンネル単位）
   const { data: hist } = await supabase
