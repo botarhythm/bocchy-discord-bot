@@ -10,6 +10,7 @@ import { getAffinity, updateAffinity } from './utils/affinity.js';
 import { getSentiment } from './utils/sentimentAnalyzer.js';
 import { analyzeGlobalContext } from './utils/analyzeGlobalContext.js';
 import { reflectiveCheck } from './utils/reflectiveCheck.js';
+import { logInterventionDecision } from './index.js';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -414,7 +415,6 @@ async function enhancedSearch(userPrompt, message, affinity, supabase) {
   return { answer, results: pageContents };
 }
 
-// サーバーメンバー名リスト取得関数
 async function getGuildMemberNames(guild, max = 20) {
   await guild.members.fetch(); // キャッシュに全員をロード
   const members = Array.from(guild.members.cache.values())
@@ -858,7 +858,11 @@ export async function shouldInterveneWithContinuation(messages, lastIntervention
     (lastIntervention ? `直前のボットの介入メッセージ:\n${lastIntervention}\n` : '') +
     `この場の「盛り上がり度（1-10）」「沈黙状態か」「困っている人がいるか」「話題の転換があったか」を判定してください。\n` +
     `また、直前のボット介入があれば「その話題が継続しているか」も判定してください。\n` +
-    `今ボットが自然に発言するなら、どんな内容が適切か例を1つ出してください。\n` +
+    `【重要】以下の条件を必ず守ってください：\n` +
+    `- 基本的にボットは沈黙や静かな時には介入しません。\n` +
+    `- 盛り上がり度が2以下かつ「困っている人が明示的にいる」場合のみ介入してください。\n` +
+    `- それ以外は介入せず、会話を静かに見守ってください。\n` +
+    `- 介入例は「本当に必要な場合のみ」出力してください。\n` +
     `JSON形式で以下のキーで返答してください: { intervene: boolean, continued: boolean, reason: string, example: string }\n履歴:\n${historyText}`;
   const res = await openai.chat.completions.create({
     model: "gpt-4o-mini-2024-07-18",
