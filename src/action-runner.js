@@ -231,9 +231,32 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
     msgs.push({ role: 'system', content: `【ユーザープロファイル】${JSON.stringify(userProfile.preferences || {})}` });
   }
   if (globalContext) {
-    msgs.push({ role: 'system', content: `【会話全体要約】${globalContext.summary}` });
-    msgs.push({ role: 'system', content: `【主な話題】${(globalContext.topics||[]).join('、')}` });
-    msgs.push({ role: 'system', content: `【全体トーン】${globalContext.tone}` });
+    if (globalContext.summary) {
+      msgs.push({ role: 'system', content: `【会話全体要約】${globalContext.summary}` });
+    }
+    if (globalContext.topics && globalContext.topics.length > 0) {
+      msgs.push({ role: 'system', content: `【主な話題】${globalContext.topics.join('、')}` });
+      // メイントピックの安定化: topics配列から最頻出トピックを抽出し、明示的にsystem promptへ
+      const topicCounts = {};
+      for (const t of globalContext.topics) {
+        topicCounts[t] = (topicCounts[t] || 0) + 1;
+      }
+      // topics配列の先頭を優先、同数なら最初に出現したもの
+      let mainTopic = globalContext.topics[0];
+      let maxCount = topicCounts[mainTopic] || 1;
+      for (const t of globalContext.topics) {
+        if (topicCounts[t] > maxCount) {
+          mainTopic = t;
+          maxCount = topicCounts[t];
+        }
+      }
+      if (mainTopic) {
+        msgs.push({ role: 'system', content: `【現在のメイントピック】この会話の中心は「${mainTopic}」です。話題が逸れても、必要に応じてこの主題に立ち返ってください。` });
+      }
+    }
+    if (globalContext.tone) {
+      msgs.push({ role: 'system', content: `【全体トーン】${globalContext.tone}` });
+    }
   }
   if (guildSummary) msgs.push({ role: 'system', content: `【サーバー全体要約】${guildSummary}` });
   if (memberNames.length > 0) {
