@@ -478,42 +478,23 @@ export async function runPipeline(action, { message, flags, supabase }) {
       console.debug('[runPipeline] 履歴プロンプト生成:', historyPrompt);
     }
 
-    // --- サーバーメンバー名リストアップ質問の判定（最優先） ---
-    const memberListPatterns = [
-      /サーバー(の|にいる)?メンバー(を|教えて|一覧|だれ|誰|list|list up|リスト|名前|ネーム)/i,
-      /このチャンネル(の|にいる)?メンバー(を|教えて|一覧|だれ|誰|list|list up|リスト|名前|ネーム)/i,
-      /メンバー(一覧|リスト|だれ|誰|教えて|名前|ネーム)/i,
-      /ログインしている(人|メンバー|ユーザー|ユーザ|名前|ネーム)/i,
-      /参加している(人|メンバー|ユーザー|ユーザ|名前|ネーム)/i,
-      /いる(人|メンバー|ユーザー|ユーザ|名前|ネーム)/i,
-      /オンライン(の)?(人|メンバー|ユーザー|ユーザ|名前|ネーム)/i,
-      /active( user| member| name| list)?/i,
-      /在籍(している)?(人|メンバー|ユーザー|ユーザ|名前|ネーム)/i,
-      /connected( user| member| name| list)?/i,
-      /who (is|are) (in|on|logged in|online|connected to) (this )?(server|guild|channel)/i
-    ];
-    const userPrompt = message.content.replace(/<@!?\\d+>/g, "").trim();
-    if (message.guild && memberListPatterns.some(re => re.test(userPrompt))) {
-      const names = await getGuildMemberNames(message.guild, 20);
-      let reply = '';
-      if (names.length === 0) {
-        reply = 'このサーバーにはまだメンバーがいません。';
-      } else {
-        reply = `このサーバーの主なメンバーは：\n${names.map(n => `・${n}`).join('\n')}`;
-        if (message.guild.memberCount > names.length) {
-          reply += `\n他にも${message.guild.memberCount - names.length}名が在籍しています。`;
-        }
-      }
-      await message.reply(reply);
-      if (supabase) await saveHistory(supabase, message, userPrompt, reply, 0);
-      return;
+    // --- サーバーメンバー情報をsystem promptとして常時付与 ---
+    let memberNames = [];
+    if (message.guild) {
+      try {
+        memberNames = await getGuildMemberNames(message.guild, 20);
+      } catch (e) { memberNames = []; }
+    }
+    let memberInfoPrompt = '';
+    if (memberNames.length > 0) {
+      memberInfoPrompt = `【このサーバーの主なメンバー】${memberNames.join('、')}\n`;
     }
 
     if (action === "search_only") {
       // high-precision search with LLM
-      const { answer, results } = await enhancedSearch(userPrompt, message, affinity, supabase);
+      const { answer, results } = await enhancedSearch(message.content, message, affinity, supabase);
       await message.reply(answer);
-      if (supabase) await saveHistory(supabase, message, userPrompt, answer, affinity);
+      if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
       return;
     } else if (action === "combined") {
       // --- ここから分岐ロジック追加 ---
@@ -521,23 +502,22 @@ export async function runPipeline(action, { message, flags, supabase }) {
       const searchWords = [
         /調べて|検索して|検索|webで|ウェブで|ニュース|最新|天気|速報|イベント|開催|今日|昨日|明日|今年|今年度|今年の|今年度の|今年度|\d{4}年/,
       ];
-      const needsSearch = searchWords.some(re => re.test(userPrompt));
+      const needsSearch = searchWords.some(re => re.test(message.content));
       let doSearch = needsSearch;
       // 2. 曖昧な場合はLLMで判定
       if (!needsSearch) {
-        const judgePrompt = `ユーザーの質問:「${userPrompt}」\nこの質問はWeb検索（Google検索など）を使わないと正確に答えられない内容ですか？\n「はい」または「いいえ」だけで答えてください。`;
-        const judge = await llmRespond(userPrompt, judgePrompt, message, [], buildCharacterPrompt(message, affinity));
+        const judgePrompt = `ユーザーの質問:「${message.content}」\nこの質問はWeb検索（Google検索など）を使わないと正確に答えられない内容ですか？\n「はい」または「いいえ」だけで答えてください。`;
+        const judge = await llmRespond(message.content, judgePrompt, message, [], buildCharacterPrompt(message, affinity));
         doSearch = judge.trim().startsWith('はい');
       }
       if (doSearch) {
-        const { answer } = await enhancedSearch(userPrompt, message, affinity, supabase);
+        const { answer } = await enhancedSearch(message.content, message, affinity, supabase);
         await message.reply(answer);
         return;
       }
       // --- 追加: 会話傾向・要望サマリーの自動更新 ---
       if (supabase) await updateUserProfileSummaryFromHistory(supabase, message.author.id, 50);
       // --- ここから介入判定ロジック ---
-      // 介入判定（明示トリガー/AI/確率）
       let guildId = message.guild ? message.guild.id : await resolveGuildId(message.client, message.author.id);
       let channelId = message.guild ? message.channel.id : 'DM';
       let historyMsgs = await buildHistoryContext(supabase, message.author.id, channelId, guildId, message.guild);
@@ -563,9 +543,9 @@ export async function runPipeline(action, { message, flags, supabase }) {
         // 介入例がAI判定で得られればそれを使う
         let reply = aiInterventionResult.example || 'こんにちは、ボッチーです。何かお困りですか？';
         // LLMで最終調整
-        reply = await llmRespond(userPrompt, '', message, contextMsgs, buildCharacterPrompt(message, affinity));
+        reply = await llmRespond(message.content, memberInfoPrompt, message, contextMsgs, buildCharacterPrompt(message, affinity));
         await message.reply({ content: reply, allowedMentions: { repliedUser: false } });
-        if (supabase) await saveHistory(supabase, message, userPrompt, reply, affinity);
+        if (supabase) await saveHistory(supabase, message, message.content, reply, affinity);
         return;
       }
       // --- 通常のLLM応答 ---
@@ -587,9 +567,9 @@ export async function runPipeline(action, { message, flags, supabase }) {
           globalContext.tone = m.content.replace('【全体トーン】','').trim();
         }
       }
-      let reply = await llmRespond(userPrompt, '', message, historyMsgs, buildCharacterPrompt(message, affinity, userProfile, globalContext));
+      let reply = await llmRespond(message.content, memberInfoPrompt, message, historyMsgs, buildCharacterPrompt(message, affinity, userProfile, globalContext));
       await message.reply({ content: reply, allowedMentions: { repliedUser: false } });
-      if (supabase) await saveHistory(supabase, message, userPrompt, reply, affinity);
+      if (supabase) await saveHistory(supabase, message, message.content, reply, affinity);
       return;
     } else if (action === "llm_only") {
       const userPrompt = message.content.replace(/<@!?\\d+>/g, "").trim();
@@ -627,9 +607,9 @@ export async function runPipeline(action, { message, flags, supabase }) {
         const bocchyConfig = yaml.load(fs.readFileSync('bocchy-character.yaml', 'utf8'));
         const feature = bocchyConfig.features.find(f => f.name.includes('自己機能説明'));
         const featureDesc = feature ? feature.description : '';
-        reply = await llmRespond(userPrompt, featureDesc, message, historyMsgs, buildCharacterPrompt(message, affinity, userProfile, globalContext));
+        reply = await llmRespond(userPrompt, memberInfoPrompt + featureDesc, message, historyMsgs, buildCharacterPrompt(message, affinity, userProfile, globalContext));
       } else {
-        reply = await llmRespond(userPrompt, '', message, historyMsgs, buildCharacterPrompt(message, affinity, userProfile, globalContext));
+        reply = await llmRespond(userPrompt, memberInfoPrompt, message, historyMsgs, buildCharacterPrompt(message, affinity, userProfile, globalContext));
       }
       // --- 感情分析 ---
       const sentiment = await getSentiment(userPrompt); // ← DB保存等の分析用途のみ
