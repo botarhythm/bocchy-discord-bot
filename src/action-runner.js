@@ -87,7 +87,8 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
     .eq('user_id', userId)
     .eq('channel_id', channelId)
     .maybeSingle();
-  const recent = (hist?.messages ?? []).slice(-SHORT_TURNS);
+  // recentは最大4往復（8件）
+  const recent = (hist?.messages ?? []).slice(-8);
 
   // 2) それ以前は「150 字要約」1 件だけ（チャンネル単位）
   const { data: sum } = await supabase
@@ -120,7 +121,8 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
       .order('updated_at', { ascending: false })
       .limit(10)
       .maybeSingle();
-    guildRecent = (ghist?.messages ?? []).slice(-2); // 直近2往復だけ
+    // guildRecentも最大2件（1往復）
+    guildRecent = (ghist?.messages ?? []).slice(-2);
     guildAllMessages = (ghist?.messages ?? []);
   }
 
@@ -136,10 +138,9 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
     userProfile = profile;
   } catch (e) { userProfile = null; }
 
-  // 5) ベクトル類似検索でパーソナライズ履歴取得
+  // 5) ベクトル類似検索でパーソナライズ履歴取得（最大2件）
   let personalizedHistory = [];
   try {
-    // 最新発言をベクトル化
     const lastUserMsg = recent.length > 0 ? recent[recent.length-1].user : '';
     let embedding = null;
     if (lastUserMsg) {
@@ -155,7 +156,7 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
         p_guild_id: guildId,
         p_embedding: embedding,
         p_match_threshold: 0.75,
-        p_match_count: 3
+        p_match_count: 2
       });
       personalizedHistory = (simRows || []).map(r => ({ user: r.message, bot: r.bot_reply }));
     }
@@ -168,18 +169,23 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
     globalContext = await analyzeGlobalContext(allHistory);
   } catch (e) { globalContext = null; }
 
-  // 7) 参加者情報の取得
+  // 7) 参加者情報の取得（5名＋他n名の要約形式）
   let memberNames = [];
+  let memberSummary = '';
   if (guild) {
     try {
       memberNames = await getGuildMemberNames(guild, 20);
-    } catch (e) { memberNames = []; }
+      if (memberNames.length > 5) {
+        memberSummary = `${memberNames.slice(0,5).join('、')}、他${memberNames.length-5}名`;
+      } else {
+        memberSummary = memberNames.join('、');
+      }
+    } catch (e) { memberSummary = ''; }
   }
 
-  // 8) ユーザー相関関係サマリーの生成
+  // 8) ユーザー相関関係サマリーの生成（要約のみ）
   let correlationSummary = '';
   try {
-    // ユーザー間のやり取り頻度・共通話題を簡易集計
     const userPairCounts = {};
     const topicCounts = {};
     for (let i = 0; i < guildAllMessages.length - 1; i++) {
@@ -189,43 +195,25 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
         const pair = `${m1.user}↔${m2.user}`;
         userPairCounts[pair] = (userPairCounts[pair] || 0) + 1;
       }
-      // 話題抽出（単純にキーワード頻度で）
       const words = (m1.user + ' ' + m1.bot).split(/\s+/);
       for (const w of words) {
         if (w.length > 1) topicCounts[w] = (topicCounts[w] || 0) + 1;
       }
     }
-    // 上位のやり取りペア
     const topPairs = Object.entries(userPairCounts)
       .sort((a,b) => b[1]-a[1])
-      .slice(0,5)
+      .slice(0,2)
       .map(([pair, count]) => `・${pair}（${count}回）`)
       .join('\n');
-    // 上位の話題
     const topTopics = Object.entries(topicCounts)
       .sort((a,b) => b[1]-a[1])
-      .slice(0,5)
+      .slice(0,2)
       .map(([topic, count]) => `#${topic}（${count}回）`)
       .join(' ');
     correlationSummary = `【サーバー内ユーザー相関サマリー】\n${topPairs}\n【共通話題】${topTopics}`;
   } catch (e) { correlationSummary = ''; }
 
-  // --- 取得状況を詳細デバッグ出力 ---
-  console.log('[DEBUG:buildHistoryContext]', {
-    userId,
-    channelId,
-    guildId,
-    recent,
-    sum: sum?.summary,
-    guildSummary,
-    guildRecent,
-    userProfile,
-    personalizedHistory,
-    globalContext,
-    memberNames,
-    correlationSummary
-  });
-  // --- 実際にプロンプトに含まれる履歴(messages)を詳細出力 ---
+  // --- プロンプト構築 ---
   const msgs = [];
   if (userProfile) {
     msgs.push({ role: 'system', content: `【ユーザープロファイル】${JSON.stringify(userProfile.preferences || {})}` });
@@ -235,53 +223,41 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
       msgs.push({ role: 'system', content: `【会話全体要約】${globalContext.summary}` });
     }
     if (globalContext.topics && globalContext.topics.length > 0) {
-      msgs.push({ role: 'system', content: `【主な話題】${globalContext.topics.join('、')}` });
-      // メイントピックの安定化: topics配列から最頻出トピックを抽出し、明示的にsystem promptへ
-      const topicCounts = {};
-      for (const t of globalContext.topics) {
-        topicCounts[t] = (topicCounts[t] || 0) + 1;
-      }
-      // topics配列の先頭を優先、同数なら最初に出現したもの
-      let mainTopic = globalContext.topics[0];
-      let maxCount = topicCounts[mainTopic] || 1;
-      for (const t of globalContext.topics) {
-        if (topicCounts[t] > maxCount) {
-          mainTopic = t;
-          maxCount = topicCounts[t];
-        }
-      }
-      if (mainTopic) {
-        msgs.push({ role: 'system', content: `【現在のメイントピック】この会話の中心は「${mainTopic}」です。話題が逸れても、必要に応じてこの主題に立ち返ってください。` });
-      }
+      msgs.push({ role: 'system', content: `【主な話題】${globalContext.topics.slice(0,2).join('、')}` });
     }
     if (globalContext.tone) {
       msgs.push({ role: 'system', content: `【全体トーン】${globalContext.tone}` });
     }
   }
   if (guildSummary) msgs.push({ role: 'system', content: `【サーバー全体要約】${guildSummary}` });
-  if (memberNames.length > 0) {
-    msgs.push({ role: 'system', content: `【現在の参加者】${memberNames.join('、')}` });
+  if (memberSummary) {
+    msgs.push({ role: 'system', content: `【現在の参加者】${memberSummary}` });
   }
   if (correlationSummary) {
     msgs.push({ role: 'system', content: correlationSummary });
   }
-  guildRecent.forEach(t => {
-    msgs.push({ role: 'user', content: t.user });
-    msgs.push({ role: 'assistant', content: t.bot });
+  // guildRecent, personalizedHistory, recentを合計最大8件まで
+  const allHistory = [...guildRecent, ...personalizedHistory, ...recent];
+  const limitedHistory = allHistory.slice(-8);
+  limitedHistory.forEach((t, i) => {
+    if (t.user) msgs.push({ role: 'user', content: t.user });
+    if (t.bot) msgs.push({ role: 'assistant', content: t.bot });
   });
   if (sum?.summary) {
     msgs.push({ role: 'system', content: `【要約】${sum.summary}` });
   }
-  personalizedHistory.forEach(t => {
-    msgs.push({ role: 'user', content: t.user });
-    msgs.push({ role: 'assistant', content: t.bot });
-  });
-  recent.forEach(t => {
-    msgs.push({ role: 'user', content: t.user });
-    msgs.push({ role: 'assistant', content: t.bot });
-  });
-  // --- プロンプトに含まれる履歴を出力 ---
-  console.log('[DEBUG:buildHistoryContext][PROMPT_MESSAGES]', msgs);
+  // --- プロンプト長（文字数ベース）で圧縮 ---
+  let totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
+  while (totalLength > 5000 && msgs.length > 2) {
+    // system以外から古いものを削除
+    for (let i = 0; i < msgs.length; i++) {
+      if (msgs[i].role !== 'system') {
+        msgs.splice(i, 1);
+        break;
+      }
+    }
+    totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
+  }
   return msgs;
 }
 
