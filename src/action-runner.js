@@ -498,7 +498,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
       let channelId = message.guild ? message.channel.id : 'DM';
       let historyMsgs = await buildHistoryContext(supabase, message.author.id, channelId, guildId, message.guild);
       // 直近の介入メッセージ取得（例: 最後のbot発言）
-      const lastIntervention = historyMsgs.reverse().find(m => m.role === 'assistant')?.content || null;
+      const lastIntervention = historyMsgs.slice().reverse().find(m => m.role === 'assistant')?.content || null;
       // AI介入判定
       let aiInterventionResult = null;
       try {
@@ -510,40 +510,15 @@ export async function runPipeline(action, { message, flags, supabase }) {
       const intervene = shouldInterveneStrict(message, { aiInterventionResult });
       // ログ出力
       console.log('[INTERVENTION_DECISION]', { intervene, aiInterventionResult });
-      if (intervene) {
-        // 介入時は会話フォロー用プロンプトを構築
-        const contextMsgs = await buildContextForFollowup(supabase, message.author.id, channelId, guildId, message.guild);
-        // Token消費監視
-        const totalTokens = contextMsgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
-        console.log('[INTERVENTION_CONTEXT]', { totalTokens, contextMsgs });
-        // 介入例がAI判定で得られればそれを使う
-        let reply = aiInterventionResult.example || 'こんにちは、ボッチーです。何かお困りですか？';
-        // LLMで最終調整
-        reply = await llmRespond(message.content, memberInfoPrompt, message, contextMsgs, buildCharacterPrompt(message, affinity));
-        await message.reply({ content: reply, allowedMentions: { repliedUser: false } });
-        if (supabase) await saveHistory(supabase, message, message.content, reply, affinity);
+      if (!intervene) {
+        // 介入不要なら何もせずreturn
         return;
       }
-      // --- 通常のLLM応答 ---
-      let userProfile = null, globalContext = null;
-      for (const m of historyMsgs) {
-        if (m.role === 'system' && m.content.startsWith('【ユーザープロファイル】')) {
-          try { userProfile = JSON.parse(m.content.replace('【ユーザープロファイル】','').trim()); } catch(e){}
-        }
-        if (m.role === 'system' && m.content.startsWith('【会話全体要約】')) {
-          globalContext = globalContext || {};
-          globalContext.summary = m.content.replace('【会話全体要約】','').trim();
-        }
-        if (m.role === 'system' && m.content.startsWith('【主な話題】')) {
-          globalContext = globalContext || {};
-          globalContext.topics = m.content.replace('【主な話題】','').split('、').map(s=>s.trim()).filter(Boolean);
-        }
-        if (m.role === 'system' && m.content.startsWith('【全体トーン】')) {
-          globalContext = globalContext || {};
-          globalContext.tone = m.content.replace('【全体トーン】','').trim();
-        }
-      }
-      let reply = await llmRespond(message.content, memberInfoPrompt, message, historyMsgs, buildCharacterPrompt(message, affinity, userProfile, globalContext));
+      // 介入時のみLLM応答
+      // 介入例がAI判定で得られればそれを使う
+      let reply = aiInterventionResult.example || 'こんにちは、ボッチーです。何かお困りですか？';
+      // LLMで最終調整
+      reply = await llmRespond(message.content, memberInfoPrompt, message, historyMsgs, buildCharacterPrompt(message, affinity));
       await message.reply({ content: reply, allowedMentions: { repliedUser: false } });
       if (supabase) await saveHistory(supabase, message, message.content, reply, affinity);
       return;
