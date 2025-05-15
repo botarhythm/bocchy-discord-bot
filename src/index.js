@@ -52,6 +52,11 @@ if (process.env.BOT_ENABLED !== "true") {
   process.exit(0);
 }
 
+if (EMERGENCY_STOP) {
+  console.log("🚨 EMERGENCY_STOPが有効化されています。ボットを完全停止します。");
+  process.exit(0);
+}
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const client = new Client({
