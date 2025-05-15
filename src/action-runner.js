@@ -488,7 +488,8 @@ export async function runPipeline(action, { message, flags, supabase }) {
         }
         // AI要約
         const summaryPrompt = `次のWebページの本文を要約し、重要なポイントを簡潔に日本語で解釈・説明してください。\n\nタイトル: ${pageTitle}\n本文: ${pageText}`;
-        const summary = await llmRespond(summaryPrompt, 'あなたはWebページ要約AIです。', message);
+        const charPrompt = buildCharacterPrompt(message, affinity);
+        const summary = await llmRespond(summaryPrompt, 'あなたはWebページ要約AIです。', message, [], charPrompt);
         await message.reply(`🔗 ページタイトル: ${pageTitle}\n要約・解釈: ${summary}\nURL: ${url}`);
       }
       return;
