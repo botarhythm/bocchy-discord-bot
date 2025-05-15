@@ -165,6 +165,8 @@ client.on("messageCreate", async (message) => {
 
   // --- DMは常に通常応答 ---
   if (!message.guild) {
+    // ★自分自身の発言は無視
+    if (message.author.id === client.user.id) return;
     const flags = detectFlags(message, client);
     const action = pickAction(flags);
     try {

@@ -11,6 +11,7 @@ import { getSentiment } from './utils/sentimentAnalyzer.js';
 import { analyzeGlobalContext } from './utils/analyzeGlobalContext.js';
 import { reflectiveCheck } from './utils/reflectiveCheck.js';
 import { logInterventionDecision } from './index.js';
+import axios from 'axios';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -426,6 +427,9 @@ async function getGuildMemberNames(guild, max = 20) {
   return members;
 }
 
+// URL抽出用の正規表現
+const urlRegex = /(https?:\/\/[^\s]+)/g;
+
 export async function runPipeline(action, { message, flags, supabase }) {
   const guildId = message.guild?.id || 'DM';
   const affinity = supabase
@@ -464,6 +468,30 @@ export async function runPipeline(action, { message, flags, supabase }) {
     let memberInfoPrompt = '';
     if (memberNames.length > 0) {
       memberInfoPrompt = `【このサーバーの主なメンバー】${memberNames.join('、')}\n`;
+    }
+
+    // --- ユーザー発言にURLが含まれていた場合、ページ内容をAI要約・解釈 ---
+    const urls = message.content.match(urlRegex);
+    if (urls && urls.length > 0) {
+      for (const url of urls) {
+        let pageTitle = '';
+        let pageText = '';
+        try {
+          const { data: html } = await axios.get(url, { timeout: 10000 });
+          const $ = load(html);
+          pageTitle = $('title').text();
+          // 本文抽出: pタグを中心に1000文字まで
+          pageText = $('p').map((i,el) => $(el).text()).get().join('\n').replace(/\s+/g, ' ').trim().slice(0, 1000);
+          if (!pageText) pageText = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 1000);
+        } catch (e) {
+          pageText = 'ページ内容の取得に失敗しました。';
+        }
+        // AI要約
+        const summaryPrompt = `次のWebページの本文を要約し、重要なポイントを簡潔に日本語で解釈・説明してください。\n\nタイトル: ${pageTitle}\n本文: ${pageText}`;
+        const summary = await llmRespond(summaryPrompt, 'あなたはWebページ要約AIです。', message);
+        await message.reply(`🔗 ページタイトル: ${pageTitle}\n要約・解釈: ${summary}\nURL: ${url}`);
+      }
+      return;
     }
 
     if (action === "search_only") {
