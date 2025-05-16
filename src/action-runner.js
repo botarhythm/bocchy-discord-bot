@@ -522,7 +522,18 @@ export async function runPipeline(action, { message, flags, supabase }) {
         return;
       }
       // --- 追加: 会話傾向・要望サマリーの自動更新 ---
-      if (supabase) await updateUserProfileSummaryFromHistory(supabase, message.author.id, 50);
+      if (supabase) {
+        // 履歴を取得
+        const channelKey = message.guild ? `${message.channel.id}` : 'DM';
+        const { data } = await supabase
+          .from('conversation_histories')
+          .select('messages')
+          .eq('user_id', message.author.id)
+          .eq('channel_id', channelKey)
+          .maybeSingle();
+        const history = data?.messages || [];
+        await updateUserProfileSummaryFromHistory(message.author.id, history);
+      }
       // --- ここから介入判定ロジック ---
       let guildId = message.guild ? message.guild.id : await resolveGuildId(message.client, message.author.id);
       let channelId = message.guild ? message.channel.id : 'DM';
@@ -555,7 +566,17 @@ export async function runPipeline(action, { message, flags, supabase }) {
     } else if (action === "llm_only") {
       const userPrompt = message.content.replace(/<@!?\\d+>/g, "").trim();
       // --- 追加: 会話傾向・要望サマリーの自動更新 ---
-      if (supabase) await updateUserProfileSummaryFromHistory(supabase, message.author.id, 50);
+      if (supabase) {
+        const channelKey = message.guild ? `${message.channel.id}` : 'DM';
+        const { data } = await supabase
+          .from('conversation_histories')
+          .select('messages')
+          .eq('user_id', message.author.id)
+          .eq('channel_id', channelKey)
+          .maybeSingle();
+        const history = data?.messages || [];
+        await updateUserProfileSummaryFromHistory(message.author.id, history);
+      }
       let guildId = null;
       if (message.guild) {
         guildId = message.guild.id;
