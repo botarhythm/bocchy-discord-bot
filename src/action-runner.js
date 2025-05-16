@@ -314,7 +314,7 @@ async function llmRespond(prompt, systemPrompt = "", message = null, history = [
   ];
   messages.push({ role: "user", content: prompt });
   const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini-2024-07-18",
+    model: "gpt-4.1-nano-2025-04-14",
     messages
   });
   return completion.choices[0]?.message?.content || "ごめんなさい、うまく答えられませんでした。";
@@ -846,7 +846,7 @@ export async function shouldInterveneWithContinuation(messages, lastIntervention
     `- 介入例は「本当に必要な場合のみ」出力してください。\n` +
     `JSON形式で以下のキーで返答してください: { intervene: boolean, continued: boolean, reason: string, example: string }\n履歴:\n${historyText}`;
   const res = await openai.chat.completions.create({
-    model: "gpt-4o-mini-2024-07-18",
+    model: "gpt-4.1-nano-2025-04-14",
     messages: [{role: "system", content: prompt}]
   });
   try {
@@ -932,48 +932,4 @@ async function buildContextForFollowup(supabase, userId, channelId, guildId = nu
     .maybeSingle();
   // プロンプト構成
   const contextMsgs = [];
-  if (guildSummary) contextMsgs.push({ role: 'system', content: `[相関サマリー] ${guildSummary}` });
-  if (sum?.summary) contextMsgs.push({ role: 'system', content: `[要約] ${sum.summary}` });
-  if (profile?.profile_summary) contextMsgs.push({ role: 'system', content: `[パーソナライズ] ${profile.profile_summary}` });
-  for (const msg of recent) {
-    if (msg.content && /[？?]|help|困|教/.test(msg.content)) {
-      contextMsgs.push(msg);
-    }
-  }
-  // Token消費監視・自動圧縮
-  let totalTokens = contextMsgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
-  while (totalTokens > 2000 && contextMsgs.length > 1) {
-    contextMsgs.splice(1, 1); // system以外から古いものを削除
-    totalTokens = contextMsgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
-  }
-  // ログ出力
-  console.log('[CONTEXT_BUILD]', { totalTokens, contextMsgs });
-  return contextMsgs;
-}
-
-// --- ユーザー会話傾向・要望の自動要約・保存 ---
-/**
- * ユーザーの会話履歴から傾向・要望を要約し、プロファイルに保存
- * @param {object} supabase
- * @param {string} userId
- * @param {number} n 件数
- */
-export async function updateUserProfileSummaryFromHistory(supabase, userId, n = 50) {
-  if (!supabase || !userId) return;
-  const { data: hist } = await supabase
-    .from('conversation_histories')
-    .select('messages')
-    .eq('user_id', userId)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  const messages = (hist?.messages ?? []).slice(-n);
-  if (messages.length === 0) return;
-  const text = messages.map(m => `ユーザー: ${m.user}\nボット: ${m.bot}`).join('\n');
-  const summary = await llmRespond(
-    text,
-    'このユーザーの好み・よく使う話題・Botへの要望や指摘を100字以内で要約してください。',
-    null, [], ''
-  );
-  await supabase.from('user_profiles').update({ profile_summary: summary }).eq('user_id', userId);
-}
+  if (guildSummary) contextMsgs.push({ role: 'system', content: `

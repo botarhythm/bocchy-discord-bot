@@ -12,7 +12,7 @@ export async function getSentiment(text) {
   const systemPrompt = '以下のテキストの感情を「positive」「negative」「neutral」のいずれかで判定し、1語で返してください。';
   try {
     const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini-2024-07-18',
+      model: 'gpt-4.1-nano-2025-04-14',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: text }

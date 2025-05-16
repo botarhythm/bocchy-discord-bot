@@ -24,7 +24,7 @@ export async function analyzeGlobalContext(history) {
   // GPT-4o-miniで話題・トーン抽出
   const prompt = `以下の会話履歴から「主な話題リスト」「全体の感情トーン（例: 楽しい・真面目・ネガティブ等）」を日本語で簡潔に抽出してください。\n---\n${formatted}`;
   const res = await openai.chat.completions.create({
-    model: 'gpt-4o-mini-2024-07-18',
+    model: 'gpt-4.1-nano-2025-04-14',
     messages: [
       { role: 'system', content: prompt }
     ]
