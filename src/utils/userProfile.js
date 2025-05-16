@@ -8,7 +8,7 @@
  * @param {function} saveSummary - 要約保存用コールバック（省略時は何もしない）
  * @returns {Promise<string>} 生成された要約
  */
-async function updateUserProfileSummaryFromHistory(userId, history, saveSummary) {
+export async function updateUserProfileSummaryFromHistory(userId, history, saveSummary) {
   if (!userId || !Array.isArray(history)) {
     throw new Error('userIdまたはhistoryが不正です');
   }
@@ -24,8 +24,4 @@ async function updateUserProfileSummaryFromHistory(userId, history, saveSummary)
     }
   }
   return summary;
-}
-
-module.exports = {
-  updateUserProfileSummaryFromHistory,
-}; 
+} 
