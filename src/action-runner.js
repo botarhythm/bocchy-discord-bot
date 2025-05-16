@@ -496,6 +496,42 @@ export async function runPipeline(action, { message, flags, supabase }) {
       return;
     }
 
+    // --- DMまたは@メンション時は必ず返答 ---
+    const isDM = !message.guild;
+    const isMention = /<@!?\d+>/.test(message.content);
+    if (isDM || isMention) {
+      const userPrompt = message.content.replace(/<@!?\d+>/g, '').trim();
+      let guildId = null;
+      if (message.guild) {
+        guildId = message.guild.id;
+      } else {
+        guildId = await resolveGuildId(message.client, message.author.id);
+      }
+      let historyMsgs = await buildHistoryContext(supabase, message.author.id, channelKey, guildId, message.guild);
+      let userProfile = null, globalContext = null;
+      for (const m of historyMsgs) {
+        if (m.role === 'system' && m.content.startsWith('【ユーザープロファイル】')) {
+          try { userProfile = JSON.parse(m.content.replace('【ユーザープロファイル】','').trim()); } catch(e){}
+        }
+        if (m.role === 'system' && m.content.startsWith('【会話全体要約】')) {
+          globalContext = globalContext || {};
+          globalContext.summary = m.content.replace('【会話全体要約】','').trim();
+        }
+        if (m.role === 'system' && m.content.startsWith('【主な話題】')) {
+          globalContext = globalContext || {};
+          globalContext.topics = m.content.replace('【主な話題】','').split('、').map(s=>s.trim()).filter(Boolean);
+        }
+        if (m.role === 'system' && m.content.startsWith('【全体トーン】')) {
+          globalContext = globalContext || {};
+          globalContext.tone = m.content.replace('【全体トーン】','').trim();
+        }
+      }
+      let reply = await llmRespond(userPrompt, '', message, historyMsgs, buildCharacterPrompt(message, affinity, userProfile, globalContext));
+      await message.reply({ content: reply, allowedMentions: { repliedUser: false } });
+      if (supabase) await saveHistory(supabase, message, userPrompt, reply, affinity);
+      return;
+    }
+
     if (action === "search_only") {
       // high-precision search with LLM
       const { answer, results } = await enhancedSearch(message.content, message, affinity, supabase);
