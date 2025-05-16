@@ -12,6 +12,7 @@ import { analyzeGlobalContext } from './utils/analyzeGlobalContext.js';
 import { reflectiveCheck } from './utils/reflectiveCheck.js';
 import { logInterventionDecision } from './index.js';
 import axios from 'axios';
+const { updateUserProfileSummaryFromHistory } = require('./utils/userProfile');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
