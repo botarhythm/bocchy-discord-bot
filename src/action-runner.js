@@ -932,4 +932,36 @@ async function buildContextForFollowup(supabase, userId, channelId, guildId = nu
     .maybeSingle();
   // プロンプト構成
   const contextMsgs = [];
-  if (guildSummary) contextMsgs.push({ role: 'system', content: `
+  if (guildSummary) contextMsgs.push({ role: 'system', content: `[相関サマリー] ${guildSummary}` });
+  if (guildSummary) contextMsgs.push({ role: 'system', content: `【サーバー全体要約】${guildSummary}` });
+  if (memberSummary) {
+    contextMsgs.push({ role: 'system', content: `【現在の参加者】${memberSummary}` });
+  }
+  if (correlationSummary) {
+    contextMsgs.push({ role: 'system', content: correlationSummary });
+  }
+  // guildRecent, personalizedHistory, recentを合計最大8件まで
+  const allHistory = [...recent, ...personalizedHistory];
+  const limitedHistory = allHistory.slice(-8);
+  limitedHistory.forEach((t, i) => {
+    if (t.user) contextMsgs.push({ role: 'user', content: t.user });
+    if (t.bot) contextMsgs.push({ role: 'assistant', content: t.bot });
+  });
+  if (sum?.summary) {
+    contextMsgs.push({ role: 'system', content: `【要約】${sum.summary}` });
+  }
+  // --- プロンプト長（文字数ベース）で圧縮 ---
+  let totalLength = contextMsgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
+  if (guildSummary) contextMsgs.push({ role: 'system', content: `[相関サマリー] ${guildSummary}` });
+  while (totalLength > 5000 && contextMsgs.length > 2) {
+    // system以外から古いものを削除
+    for (let i = 0; i < contextMsgs.length; i++) {
+      if (contextMsgs[i].role !== 'system') {
+        contextMsgs.splice(i, 1);
+        break;
+      }
+    }
+    totalLength = contextMsgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
+  }
+  return contextMsgs;
+}
