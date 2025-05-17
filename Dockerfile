@@ -7,7 +7,7 @@ COPY package-lock.json ./
 COPY src ./src
 COPY tsconfig.json ./
 
-RUN npm install
+RUN npm install --production=false
 RUN npm run build || (echo 'build failed' && ls -l dist && ls -l dist/services && cat dist/*.js && cat dist/services/*.js)
 RUN ls -l dist || true
 RUN ls -l dist/services || true
