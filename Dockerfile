@@ -9,5 +9,6 @@ COPY tsconfig.json ./
 
 RUN npm install
 RUN npm run build
+RUN ls -l dist/services
 
 CMD ["node", "dist/index.js"] 
