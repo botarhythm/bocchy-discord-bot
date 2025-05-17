@@ -6,7 +6,7 @@ import { OpenAI } from 'openai';
 import yaml from 'js-yaml';
 import fs from 'fs';
 import { resolveGuildId } from './utils/archive/resolveGuildId.js';
-import { getAffinity, updateAffinity } from './utils/affinity';
+import { getAffinity, updateAffinity } from './utils/affinity.js';
 import { getSentiment } from './utils/sentimentAnalyzer';
 import { analyzeGlobalContext } from './utils/analyzeGlobalContext';
 import { reflectiveCheck } from './utils/reflectiveCheck';
