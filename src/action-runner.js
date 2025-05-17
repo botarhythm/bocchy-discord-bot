@@ -338,28 +338,32 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   } catch (e) {
     console.warn('[buildHistoryContext] 分脈抽出LLM失敗', e);
   }
-  // --- 追加: 直近のユーザー発言から「ユーザーの意図推察」systemメッセージをLLMで生成し、history冒頭に必ず追加 ---
+  // --- 追加: 直近のユーザー発言から「多角的推論（考えられる複数の意図・期待・関心）」systemメッセージをLLMで生成し、history冒頭に必ず追加 ---
   try {
     const lastUserMsg = allHistory.length > 0 ? allHistory[allHistory.length-1].user : '';
     if (lastUserMsg && lastUserMsg.length > 2) {
       const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const intentPrompt = `次のユーザー発言から「ユーザーの意図・本当に知りたいこと・期待している回答」を日本語で簡潔に推察し、1文で要約してください。\n---\n${lastUserMsg}\n---\n出力例: ユーザーは○○について深く知りたがっている／本質的な理由を求めている／比較を期待している 等`;
+      const multiIntentPrompt = `次のユーザー発言から「考えられる複数の意図・期待・関心」を日本語で3つ程度、推論し、JSON配列で出力してください。\n---\n${lastUserMsg}\n---\n出力例: [\"人気の豆を知りたい\", \"産地や焙煎方法に興味がある\", \"おすすめを探している\"]`;
       const res = await openai.chat.completions.create({
         model: 'gpt-4.1-nano-2025-04-14',
         messages: [
-          { role: 'system', content: 'あなたはユーザー意図推察AIです。' },
-          { role: 'user', content: intentPrompt }
+          { role: 'system', content: 'あなたは多角的推論AIです。' },
+          { role: 'user', content: multiIntentPrompt }
         ],
         max_tokens: 128,
-        temperature: 0.2
+        temperature: 0.3
       });
-      const intent = res.choices[0]?.message?.content?.trim() || '';
-      if (intent) {
-        msgs.unshift({ role: 'system', content: `【ユーザーの意図推察】${intent}` });
+      const content = res.choices[0]?.message?.content?.trim() || '';
+      const arr = content.match(/\[.*\]/s)?.[0];
+      if (arr) {
+        const intents = JSON.parse(arr);
+        if (Array.isArray(intents) && intents.length > 0) {
+          msgs.unshift({ role: 'system', content: `【多角的推論】この発言から考えられる意図・期待・関心: ${intents.join(' / ')}` });
+        }
       }
     }
   } catch (e) {
-    console.warn('[buildHistoryContext] ユーザー意図推察LLM失敗', e);
+    console.warn('[buildHistoryContext] 多角的推論LLM失敗', e);
   }
   // --- 長期記憶（要約・ベクトル検索）も同様にsystemメッセージ化して冒頭に追加 ---
   if (sum?.summary) {
@@ -369,8 +373,8 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   let totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
   while (totalLength > 5000 && msgs.length > 8) {
     for (let i = 0; i < msgs.length; i++) {
-      // 「会話の流れ要約」「未解決の問い」「ユーザーの期待」「感情トーン」「長期記憶要約」「ユーザーの意図推察」「現在の話題」「直前の課題」「技術的文脈」systemメッセージは絶対に消さない
-      if (/【(会話の流れ要約|未解決の問い|ユーザーの期待|感情トーン|長期記憶要約|ユーザーの意図推察|現在の話題|直前の課題|技術的文脈)】/.test(msgs[i].content)) continue;
+      // 「会話の流れ要約」「未解決の問い」「ユーザーの期待」「感情トーン」「長期記憶要約」「ユーザーの意図推察」「現在の話題」「直前の課題」「技術的文脈」「多角的推論」systemメッセージは絶対に消さない
+      if (/【(会話の流れ要約|未解決の問い|ユーザーの期待|感情トーン|長期記憶要約|ユーザーの意図推察|現在の話題|直前の課題|技術的文脈|多角的推論)】/.test(msgs[i].content)) continue;
       if (msgs[i].role !== 'system' && !msgs[i].entities?.urls?.length) {
         msgs.splice(i, 1);
         break;
@@ -708,9 +712,10 @@ export async function runPipeline(action, { message, flags, supabase }) {
     }
     // --- キャラクタープロンプト/systemメッセージでhistory参照の強制をさらに強調 ---
     const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext)
-      + '\n【最重要】どんな質問・指示語・曖昧な表現でも、history内のsystemメッセージ（直前の話題・要約・課題・技術的文脈・意図推察など）を必ず最優先で参照し、その文脈に即した応答を生成してください。'
-      + '\n【推論指示】もし曖昧な質問や指示語が出た場合は、historyの直前の話題・要約・課題・文脈を根拠に推論し、最も自然な文脈的解釈で答えてください。'
-      + '\n【禁止事項】historyのsystemメッセージを無視したり、一般論や抽象的な返答に流れず、必ず文脈に即した具体的な応答を心がけてください。';
+      + '\n【最重要】どんな質問・指示語・曖昧な表現でも、history内のsystemメッセージ（直前の話題・要約・課題・技術的文脈・意図推察・多角的推論など）を必ず最優先で参照し、その文脈に即した応答を生成してください。'
+      + '\n【推論指示】もし曖昧な質問や指示語が出た場合は、historyの直前の話題・要約・課題・文脈・多角的推論を根拠に推論し、最も自然な文脈的解釈で答えてください。'
+      + '\n【禁止事項】historyのsystemメッセージを無視したり、一般論や抽象的な返答に流れず、必ず文脈に即した具体的な応答を心がけてください。'
+      + '\n【人間らしさ】historyの多角的推論を活かし、複数の切り口や余白を持った人間らしい返答を生成してください。';
     const answer = await llmRespond(message.content, '', message, history, charPrompt);
     await message.reply(answer);
     if (supabase) await updateAffinity(supabase, userId, guildId, message.content);
