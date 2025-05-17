@@ -283,67 +283,46 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   }
   // --- 直近のユーザー→Botペアを必ずhistoryに含める ---
   const allHistory = [...guildRecent, ...personalizedHistory, ...recent];
-  // 直近3往復（6件）を抽出
   const latestPairs = allHistory.slice(-6);
-  // 最高ランク: 直前1往復（2件）
   const topPriorityPairs = latestPairs.slice(-2);
-  // 準ずる高ランク: その前の2ペア（4件）
   const highPriorityPairs = latestPairs.slice(-6, -2);
 
-  // --- 最高ランク: 直前1往復をhistory冒頭・systemメッセージに必ず保持 ---
-  if (topPriorityPairs.length === 2) {
-    const lastUser = topPriorityPairs[0]?.user || '';
-    const lastBot = topPriorityPairs[1]?.bot || '';
-    msgs.unshift({ role: 'user', content: lastUser });
-    msgs.unshift({ role: 'assistant', content: lastBot });
-    msgs.unshift({ role: 'system', content: `【直前の会話（最高ランク）】ユーザー:「${lastUser}」→ボッチー:「${lastBot}」` });
-  }
-  // --- 準ずる高ランク: その前の2ペアもhistoryに必ず保持 ---
-  for (let i = 0; i < highPriorityPairs.length; i += 2) {
-    const user = highPriorityPairs[i]?.user || '';
-    const bot = highPriorityPairs[i+1]?.bot || '';
-    if (user) msgs.push({ role: 'user', content: user });
-    if (bot) msgs.push({ role: 'assistant', content: bot });
-  }
-  // --- 直前の会話ペアから「話題要約・質問意図・期待される次の話題」をLLMで抽出し、systemメッセージとして挿入 ---
-  if (topPriorityPairs.length === 2) {
-    const lastUser = topPriorityPairs[0]?.user || '';
-    const lastBot = topPriorityPairs[1]?.bot || '';
-    const contextText = `ユーザー: ${lastUser}\nボッチー: ${lastBot}`;
-    try {
-      const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const prompt = `以下は直前の会話ペアです。このやりとりから「話題要約」「質問意図」「期待される次の話題」を日本語で簡潔に抽出し、JSONで出力してください。\n---\n${contextText}\n---\n出力例: {\"topic\":\"...\",\"intent\":\"...\",\"next_topic\":\"...\"}`;
-      const res = await openai.chat.completions.create({
-        model: 'gpt-4.1-nano-2025-04-14',
-        messages: [
-          { role: 'system', content: 'あなたは会話要約AIです。' },
-          { role: 'user', content: prompt }
-        ],
-        max_tokens: 128,
-        temperature: 0.2
-      });
-      const content = res.choices[0]?.message?.content?.trim() || '';
-      const json = content.match(/\{[\s\S]*\}/)?.[0];
-      if (json) {
-        const obj = JSON.parse(json);
-        if (obj.topic) msgs.unshift({ role: 'system', content: `【直前の話題要約（最高ランク）】${obj.topic}` });
-        if (obj.intent) msgs.unshift({ role: 'system', content: `【直前の質問・意図（最高ランク）】${obj.intent}` });
-        if (obj.next_topic) msgs.unshift({ role: 'system', content: `【期待される次の話題（最高ランク）】${obj.next_topic}` });
-      }
-    } catch (e) {
-      console.warn('[buildHistoryContext] 直前会話ペア要約LLM失敗', e);
+  // --- 本質的短期記憶: 直近の会話履歴から「会話の流れ要約」「未解決の問い」「ユーザーの期待」「感情トーン」をLLMで抽出し、systemメッセージとしてhistory冒頭に必ず追加 ---
+  try {
+    const conversationText = allHistory.map(h => `ユーザー: ${h.user || ''}\nボッチー: ${h.bot || ''}`).join('\n');
+    const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const prompt = `以下は直近の会話履歴です。このやりとり全体から「会話の流れ要約」「未解決の問い」「ユーザーの期待」「感情トーン」を日本語で簡潔に抽出し、JSONで出力してください。\n---\n${conversationText}\n---\n出力例: {\"topic\":\"...\",\"unresolved\":\"...\",\"expectation\":\"...\",\"tone\":\"...\"}`;
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4.1-nano-2025-04-14',
+      messages: [
+        { role: 'system', content: 'あなたは会話要約AIです。' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 256,
+      temperature: 0.2
+    });
+    const content = res.choices[0]?.message?.content?.trim() || '';
+    const json = content.match(/\{[\s\S]*\}/)?.[0];
+    if (json) {
+      const obj = JSON.parse(json);
+      if (obj.topic) msgs.unshift({ role: 'system', content: `【会話の流れ要約】${obj.topic}` });
+      if (obj.unresolved) msgs.unshift({ role: 'system', content: `【未解決の問い】${obj.unresolved}` });
+      if (obj.expectation) msgs.unshift({ role: 'system', content: `【ユーザーの期待】${obj.expectation}` });
+      if (obj.tone) msgs.unshift({ role: 'system', content: `【感情トーン】${obj.tone}` });
     }
+  } catch (e) {
+    console.warn('[buildHistoryContext] 会話全体要約LLM失敗', e);
   }
-  // --- それ以前の履歴は圧縮・要約のみ ---
+  // --- 長期記憶（要約・ベクトル検索）も同様にsystemメッセージ化して冒頭に追加 ---
   if (sum?.summary) {
-    msgs.push({ role: 'system', content: `【要約】${sum.summary}` });
+    msgs.unshift({ role: 'system', content: `【長期記憶要約】${sum.summary}` });
   }
-  // --- 圧縮時も最高ランク・高ランクの3ペア（6件）は絶対に消さない ---
+  // --- 圧縮時もこれらのsystemメッセージは絶対に消さない ---
   let totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
   while (totalLength > 5000 && msgs.length > 8) {
-    for (let i = 0; i < msgs.length - 6; i++) {
-      // 最高ランク・高ランクの6件は絶対に消さない
-      if (i < 6) continue;
+    for (let i = 0; i < msgs.length; i++) {
+      // 「会話の流れ要約」「未解決の問い」「ユーザーの期待」「感情トーン」「長期記憶要約」systemメッセージは絶対に消さない
+      if (/【(会話の流れ要約|未解決の問い|ユーザーの期待|感情トーン|長期記憶要約)】/.test(msgs[i].content)) continue;
       if (msgs[i].role !== 'system' && !msgs[i].entities?.urls?.length) {
         msgs.splice(i, 1);
         break;
