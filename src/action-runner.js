@@ -268,6 +268,14 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
         msgs.push({ role: 'system', content: `【直前の話題URL】この会話の直前で話題になっていたURLは「${urlsInUser.join(', ')}」です。以降の質問で『さっきのURL』や『前の話題』とあれば必ずこれを参照してください。` });
       }
     }
+    // --- 直前のニュース要約・タイトルもsystemメッセージとして残す ---
+    if (t.bot && t.bot.length > 0 && /要約|まとめ|ニュース/.test(t.bot)) {
+      // タイトル抽出（1行目 or 【タイトル】パターン）
+      const titleMatch = t.bot.match(/【?(.+?)】?(の要約|まとめ|ニュース)?/);
+      const title = titleMatch ? titleMatch[1] : '';
+      msgs.push({ role: 'system', content: `【直前のニュース要約】${t.bot}` });
+      if (title) msgs.push({ role: 'system', content: `【直前のニュースタイトル】${title}` });
+    }
   }
   // --- それ以前の履歴は圧縮・要約のみ ---
   if (sum?.summary) {
@@ -594,35 +602,43 @@ export async function runPipeline(action, { message, flags, supabase }) {
     }
     // --- 指示語検知時もsystemメッセージをhistoryの先頭に必ず残す ---
     if (referPrevUrlPattern.test(message.content)) {
-      // entities付き履歴から直近のURLを抽出
+      // entities付き履歴から直近のURL・要約・タイトルを抽出
       let prevUrl = null;
       let prevUser = null;
       let prevTitle = null;
+      let prevSummary = null;
       for (let i = history.length - 1; i >= 0; i--) {
         const h = history[i];
         // entities優先
-        if (h.entities?.urls?.length) {
+        if (h.entities?.urls?.length && !prevUrl) {
           prevUrl = h.entities.urls[h.entities.urls.length - 1];
           prevUser = h.name || getUserDisplayName(message) || message.author.username;
-          break;
+        }
+        if (h.role === 'system' && h.content?.startsWith('【直前のニュース要約】') && !prevSummary) {
+          prevSummary = h.content.replace('【直前のニュース要約】', '').trim();
+        }
+        if (h.role === 'system' && h.content?.startsWith('【直前のニュースタイトル】') && !prevTitle) {
+          prevTitle = h.content.replace('【直前のニュースタイトル】', '').trim();
         }
         // fallback: 旧ロジック
-        if (h.role === 'user' && h.content) {
+        if (h.role === 'user' && h.content && !prevUrl) {
           const found = h.content.match(urlRegex);
           if (found && found.length > 0) {
             prevUrl = found[found.length - 1];
             prevUser = h.name || getUserDisplayName(message) || message.author.username;
             const titleMatch = h.content.match(/\n(.+?)\n/);
             if (titleMatch) prevTitle = titleMatch[1];
-            break;
           }
         }
+        if (prevUrl && prevSummary && prevTitle) break;
       }
-      if (prevUrl) {
-        let sysMsg = `【直前の話題URL】${prevUser}さんが「${prevUrl}"`;
-        if (prevTitle) sysMsg += `（${prevTitle}）`;
-        sysMsg += `を紹介しました。以降の質問で『さっきのURL』『前のニュース』『その話題』『さっきシェアしたニュース』『さっき貼ったリンク』『上の話題』『先ほどのURL』『先ほどのリンク』などが出た場合は必ずこれを参照してください。`;
-        // 先頭に必ず残す
+      // system promptに明示的に挿入
+      let sysMsg = '';
+      if (prevUrl) sysMsg += `【直前の話題URL】${prevUser || ''}さんが「${prevUrl}"を紹介しました。`;
+      if (prevTitle) sysMsg += `【直前のニュースタイトル】${prevTitle}。`;
+      if (prevSummary) sysMsg += `【直前のニュース要約】${prevSummary}`;
+      if (sysMsg) {
+        sysMsg += ' 以降の質問で「さっきのニュース」「そのニュース」「さっきのURL」「前の話題」などが出た場合は必ずこれらを参照し、内容を踏まえて回答してください。historyのsystemメッセージを最優先で参照してください。';
         history.unshift({ role: 'system', content: sysMsg });
       }
     }
