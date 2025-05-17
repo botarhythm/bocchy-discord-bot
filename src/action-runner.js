@@ -264,14 +264,16 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   return msgs;
 }
 
-// 動的レンダリング＋静的抽出の二段槈
+// --- ChatGPT風: Webページクロール＆自然言語要約 ---
 export async function fetchPageContent(url) {
+  let content = '';
+  let errorMsg = '';
   // 1. puppeteerで動的レンダリング
   try {
     const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    const content = await page.evaluate(() => {
+    content = await page.evaluate(() => {
       const main = document.querySelector('main')?.innerText || '';
       const article = document.querySelector('article')?.innerText || '';
       const body = document.body.innerText || '';
@@ -280,7 +282,7 @@ export async function fetchPageContent(url) {
     await browser.close();
     if (content && content.replace(/\s/g, '').length > 50) return content;
   } catch (e) {
-    // puppeteer失敗時は静的抽出にフォールバック
+    errorMsg += `[puppeteer失敗: ${e.message}]\n`;
   }
   // 2. fetch+cheerioで静的HTML抽出
   try {
@@ -292,11 +294,27 @@ export async function fetchPageContent(url) {
     const mainText = $('main').text() + $('article').text() + $('section').text();
     const ps = $('p').map((_i, el) => $(el).text()).get().join('\n');
     let text = [title, metaDesc, mainText, ps].filter(Boolean).join('\n');
-    if (text.replace(/\s/g, '').length < 50) return '';
+    if (text.replace(/\s/g, '').length < 50) {
+      errorMsg += '[cheerio抽出も短すぎ]';
+      return errorMsg || '';
+    }
     return text.trim();
   } catch (e) {
-    return '';
+    errorMsg += `[fetch/cheerio失敗: ${e.message}]`;
+    return errorMsg || '';
   }
+}
+
+// --- ChatGPT風: Webページ内容をLLMで自然言語要約 ---
+export async function summarizeWebPage(rawText, userPrompt = '', message = null, charPrompt = null) {
+  if (!rawText || rawText.length < 30) {
+    return 'ページ内容が取得できませんでした。URLが無効か、クロールが制限されている可能性があります。';
+  }
+  const prompt =
+    `以下はWebページの内容です。重要なポイント・要旨・特徴を日本語で分かりやすく要約してください。` +
+    (userPrompt ? `\n\n【ユーザーの質問・要望】${userPrompt}` : '') +
+    `\n\n【ページ内容】\n${rawText}\n\n【出力形式】\n- 箇条書きや短い段落でまとめてください。\n- 事実ベースで簡潔に。`;
+  return await llmRespond(userPrompt, prompt, message, [], charPrompt);
 }
 
 // ---- 1. googleSearch: 信頼性の高いサイトを優先しつつSNS/ブログも含める ----
