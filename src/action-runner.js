@@ -283,58 +283,36 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   }
   // --- 直近のユーザー→Botペアを必ずhistoryに含める ---
   const allHistory = [...guildRecent, ...personalizedHistory, ...recent];
-  // 直近3往復（6件）は必ず残す
+  // 直近3往復（6件）を抽出
   const latestPairs = allHistory.slice(-6);
-  // 直前のユーザー発言にURLが含まれていればsystemで明示（直後に挿入）
-  for (let i = 0; i < latestPairs.length; i++) {
-    const t = latestPairs[i];
-    // --- エンティティ付与 ---
-    if (t.user) t.entities = await extractEntitiesLLM(t.user);
-    if (t.bot) t.entities = await extractEntitiesLLM(t.bot);
-    if (t.user) msgs.push({ role: 'user', content: t.user, entities: t.entities });
-    if (t.bot) msgs.push({ role: 'assistant', content: t.bot, entities: t.entities });
-    // 直後にsystemメッセージを挿入
-    if (t.user) {
-      const urlsInUser = t.user.match(urlRegex);
-      if (urlsInUser && urlsInUser.length > 0) {
-        msgs.push({ role: 'system', content: `【直前の話題URL】この会話の直前で話題になっていたURLは「${urlsInUser.join(', ')}」です。以降の質問で『さっきのURL』や『前の話題』とあれば必ずこれを参照してください。` });
-      }
-    }
-    // --- 直前のニュース要約・タイトルもsystemメッセージとして残す ---
-    if (t.bot && t.bot.length > 0 && /要約|まとめ|ニュース/.test(t.bot)) {
-      // タイトル抽出（1行目 or 【タイトル】パターン）
-      const titleMatch = t.bot.match(/【?(.+?)】?(の要約|まとめ|ニュース)?/);
-      const title = titleMatch ? titleMatch[1] : '';
-      msgs.push({ role: 'system', content: `【直前のニュース要約】${t.bot}` });
-      if (title) msgs.push({ role: 'system', content: `【直前のニュースタイトル】${title}` });
-    }
+  // 最高ランク: 直前1往復（2件）
+  const topPriorityPairs = latestPairs.slice(-2);
+  // 準ずる高ランク: その前の2ペア（4件）
+  const highPriorityPairs = latestPairs.slice(-6, -2);
+
+  // --- 最高ランク: 直前1往復をhistory冒頭・systemメッセージに必ず保持 ---
+  if (topPriorityPairs.length === 2) {
+    const lastUser = topPriorityPairs[0]?.user || '';
+    const lastBot = topPriorityPairs[1]?.bot || '';
+    msgs.unshift({ role: 'user', content: lastUser });
+    msgs.unshift({ role: 'assistant', content: lastBot });
+    msgs.unshift({ role: 'system', content: `【直前の会話（最高ランク）】ユーザー:「${lastUser}」→ボッチー:「${lastBot}」` });
   }
-  // --- それ以前の履歴は圧縮・要約のみ ---
-  if (sum?.summary) {
-    msgs.push({ role: 'system', content: `【要約】${sum.summary}` });
+  // --- 準ずる高ランク: その前の2ペアもhistoryに必ず保持 ---
+  for (let i = 0; i < highPriorityPairs.length; i += 2) {
+    const user = highPriorityPairs[i]?.user || '';
+    const bot = highPriorityPairs[i+1]?.bot || '';
+    if (user) msgs.push({ role: 'user', content: user });
+    if (bot) msgs.push({ role: 'assistant', content: bot });
   }
-  // --- プロンプト長（文字数ベース）で圧縮 ---
-  let totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
-  // 直近3往復＋要約・プロファイル・エンティティ付き発言・重要system・直前systemは必ず残す
-  while (totalLength > 5000 && msgs.length > 8) {
-    for (let i = 0; i < msgs.length - 6; i++) {
-      // 直前6件・エンティティ付き発言・systemメッセージは絶対に消さない
-      if (i < msgs.length - 6) continue;
-      if (msgs[i].role !== 'system' && !msgs[i].entities?.urls?.length) {
-        msgs.splice(i, 1);
-        break;
-      }
-    }
-    totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
-  }
-  // --- 追加: 直前の会話ペアから「話題要約・質問意図・期待される次の話題」をLLMで抽出し、systemメッセージとして挿入 ---
-  if (latestPairs.length >= 2) {
-    const lastUser = latestPairs[latestPairs.length-2]?.user || '';
-    const lastBot = latestPairs[latestPairs.length-1]?.bot || '';
+  // --- 直前の会話ペアから「話題要約・質問意図・期待される次の話題」をLLMで抽出し、systemメッセージとして挿入 ---
+  if (topPriorityPairs.length === 2) {
+    const lastUser = topPriorityPairs[0]?.user || '';
+    const lastBot = topPriorityPairs[1]?.bot || '';
     const contextText = `ユーザー: ${lastUser}\nボッチー: ${lastBot}`;
     try {
       const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const prompt = `以下は直前の会話ペアです。このやりとりから「話題要約」「質問意図」「期待される次の話題」を日本語で簡潔に抽出し、JSONで出力してください。\n---\n${contextText}\n---\n出力例: {"topic":"...","intent":"...","next_topic":"..."}`;
+      const prompt = `以下は直前の会話ペアです。このやりとりから「話題要約」「質問意図」「期待される次の話題」を日本語で簡潔に抽出し、JSONで出力してください。\n---\n${contextText}\n---\n出力例: {\"topic\":\"...\",\"intent\":\"...\",\"next_topic\":\"...\"}`;
       const res = await openai.chat.completions.create({
         model: 'gpt-4.1-nano-2025-04-14',
         messages: [
@@ -348,13 +326,30 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
       const json = content.match(/\{[\s\S]*\}/)?.[0];
       if (json) {
         const obj = JSON.parse(json);
-        if (obj.topic) msgs.push({ role: 'system', content: `【直前の話題要約】${obj.topic}` });
-        if (obj.intent) msgs.push({ role: 'system', content: `【直前の質問・意図】${obj.intent}` });
-        if (obj.next_topic) msgs.push({ role: 'system', content: `【期待される次の話題】${obj.next_topic}` });
+        if (obj.topic) msgs.unshift({ role: 'system', content: `【直前の話題要約（最高ランク）】${obj.topic}` });
+        if (obj.intent) msgs.unshift({ role: 'system', content: `【直前の質問・意図（最高ランク）】${obj.intent}` });
+        if (obj.next_topic) msgs.unshift({ role: 'system', content: `【期待される次の話題（最高ランク）】${obj.next_topic}` });
       }
     } catch (e) {
       console.warn('[buildHistoryContext] 直前会話ペア要約LLM失敗', e);
     }
+  }
+  // --- それ以前の履歴は圧縮・要約のみ ---
+  if (sum?.summary) {
+    msgs.push({ role: 'system', content: `【要約】${sum.summary}` });
+  }
+  // --- 圧縮時も最高ランク・高ランクの3ペア（6件）は絶対に消さない ---
+  let totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
+  while (totalLength > 5000 && msgs.length > 8) {
+    for (let i = 0; i < msgs.length - 6; i++) {
+      // 最高ランク・高ランクの6件は絶対に消さない
+      if (i < 6) continue;
+      if (msgs[i].role !== 'system' && !msgs[i].entities?.urls?.length) {
+        msgs.splice(i, 1);
+        break;
+      }
+    }
+    totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
   }
   return msgs;
 }
