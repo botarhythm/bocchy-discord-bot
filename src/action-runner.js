@@ -38,6 +38,30 @@ function extractEntities(text) {
   return { urls, persons, events, sports };
 }
 
+// --- LLMによるエンティティ抽出 ---
+async function extractEntitiesLLM(text) {
+  if (!text || text.length < 2) return {};
+  const prompt = `次のテキストから「人名」「組織名」「政策名」「イベント名」「話題」「URL」など重要なエンティティをJSON形式で抽出してください。\nテキスト: ${text}\n出力例: {"persons": ["大谷翔平"], "organizations": ["ムーディーズ"], "policies": ["財政赤字"], "events": ["米国債格下げ"], "topics": ["米国経済"], "urls": ["https://..."]}`;
+  try {
+    const res = await openai.chat.completions.create({
+      model: "gpt-4.1-nano-2025-04-14",
+      messages: [
+        { role: "system", content: "あなたはエンティティ抽出AIです。" },
+        { role: "user", content: prompt }
+      ],
+      max_tokens: 256,
+      temperature: 0.0
+    });
+    const content = res.choices[0]?.message?.content?.trim() || "";
+    const json = content.match(/\{[\s\S]*\}/)?.[0];
+    if (json) return JSON.parse(json);
+    return {};
+  } catch (e) {
+    console.warn("[extractEntitiesLLM] LLM抽出失敗", e);
+    return {};
+  }
+}
+
 // ユーザーの表示名・ニックネームを正しく取得
 function getUserDisplayName(message) {
   // サーバー内ならニックネーム→グローバル表示名→ユーザー名の順
@@ -265,8 +289,8 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   for (let i = 0; i < latestPairs.length; i++) {
     const t = latestPairs[i];
     // --- エンティティ付与 ---
-    if (t.user) t.entities = extractEntities(t.user);
-    if (t.bot) t.entities = { ...t.entities, ...extractEntities(t.bot) };
+    if (t.user) t.entities = await extractEntitiesLLM(t.user);
+    if (t.bot) t.entities = await extractEntitiesLLM(t.bot);
     if (t.user) msgs.push({ role: 'user', content: t.user, entities: t.entities });
     if (t.bot) msgs.push({ role: 'assistant', content: t.bot, entities: t.entities });
     // 直後にsystemメッセージを挿入
@@ -651,8 +675,35 @@ export async function runPipeline(action, { message, flags, supabase }) {
   }
 }
 
-export function shouldContextuallyIntervene() {
-  throw new Error('shouldContextuallyInterveneは未実装です。src/action-runner.jsで実装してください。');
+export async function shouldContextuallyIntervene(history = [], globalContext = null) {
+  // history: [{role, content, ...}] の配列（直近10件程度）
+  // globalContext: {topics, tone, summary} など
+  const formatted = history.slice(-10).map(h => `${h.role}: ${h.content}`).join('\n');
+  let contextStr = '';
+  if (globalContext) {
+    if (globalContext.topics?.length) contextStr += `主な話題: ${globalContext.topics.join('、')}\n`;
+    if (globalContext.tone) contextStr += `感情トーン: ${globalContext.tone}\n`;
+    if (globalContext.summary) contextStr += `要約: ${globalContext.summary}\n`;
+  }
+  const prompt = `以下はDiscordの会話履歴です。今このタイミングでAIが自然に介入（発言）すべきか判定してください。\n---\n${contextStr}\n${formatted}\n---\n【質問】今AIが介入すべきですか？（はい/いいえで答え、理由も簡潔に日本語で述べてください）`;
+  try {
+    const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4.1-nano-2025-04-14',
+      messages: [
+        { role: 'system', content: 'あなたは会話介入判定AIです。' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 64,
+      temperature: 0.0
+    });
+    const content = res.choices[0]?.message?.content?.trim() || '';
+    const intervene = /^はい/.test(content);
+    return { intervene, reason: content };
+  } catch (e) {
+    console.warn('[shouldContextuallyIntervene] LLM判定失敗', e);
+    return { intervene: false, reason: 'LLM判定失敗' };
+  }
 }
 
 export { enhancedSearch };

@@ -12,10 +12,26 @@ export async function updateUserProfileSummaryFromHistory(userId, history, saveS
   if (!userId || !Array.isArray(history)) {
     throw new Error('userIdまたはhistoryが不正です');
   }
-  // 履歴から要約を生成（ここでは単純に最新5件を連結して要約とする例）
-  const recent = history.slice(-5).map(msg => msg.content || '').join(' ');
-  // TODO: LLM等で要約生成する場合はここでAPI呼び出し
-  const summary = `最近の発言要約: ${recent.substring(0, 200)}...`;
+  // LLMで履歴から要約生成
+  const formatted = history.slice(-10).map(msg => msg.content || '').join('\n');
+  const prompt = `以下はユーザーの直近の発言履歴です。この人の「好み・傾向・要望」を日本語で簡潔に要約してください。\n---\n${formatted}`;
+  let summary = '';
+  try {
+    const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4.1-nano-2025-04-14',
+      messages: [
+        { role: 'system', content: 'あなたはユーザープロファイル要約AIです。' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 128,
+      temperature: 0.2
+    });
+    summary = res.choices[0]?.message?.content?.trim() || '';
+  } catch (e) {
+    console.warn('[updateUserProfileSummaryFromHistory] LLM要約失敗', e);
+    summary = `最近の発言要約: ${formatted.substring(0, 200)}...`;
+  }
   if (typeof saveSummary === 'function') {
     try {
       await saveSummary(userId, summary);
