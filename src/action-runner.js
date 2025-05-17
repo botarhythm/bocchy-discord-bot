@@ -23,6 +23,13 @@ const bocchyConfig = yaml.load(fs.readFileSync('bocchy-character.yaml', 'utf8'))
 // --- URL抽出用: グローバルで1回だけ宣言 ---
 const urlRegex = /(https?:\/\/[^\s]+)/g;
 
+// --- エンティティ抽出（現状はURLのみ、今後拡張可） ---
+function extractEntities(text) {
+  const urls = text ? (text.match(urlRegex) || []) : [];
+  // 今後: topics, persons等も追加可能
+  return { urls };
+}
+
 // ユーザーの表示名・ニックネームを正しく取得
 function getUserDisplayName(message) {
   // サーバー内ならニックネーム→グローバル表示名→ユーザー名の順
@@ -249,8 +256,11 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   // 直前のユーザー発言にURLが含まれていればsystemで明示（直後に挿入）
   for (let i = 0; i < latestPairs.length; i++) {
     const t = latestPairs[i];
-    if (t.user) msgs.push({ role: 'user', content: t.user });
-    if (t.bot) msgs.push({ role: 'assistant', content: t.bot });
+    // --- エンティティ付与 ---
+    if (t.user) t.entities = extractEntities(t.user);
+    if (t.bot) t.entities = { ...t.entities, ...extractEntities(t.bot) };
+    if (t.user) msgs.push({ role: 'user', content: t.user, entities: t.entities });
+    if (t.bot) msgs.push({ role: 'assistant', content: t.bot, entities: t.entities });
     // 直後にsystemメッセージを挿入
     if (t.user) {
       const urlsInUser = t.user.match(urlRegex);
@@ -265,10 +275,11 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   }
   // --- プロンプト長（文字数ベース）で圧縮 ---
   let totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
-  // 直近3往復＋要約・プロファイルは必ず残す
+  // 直近3往復＋要約・プロファイル・エンティティ付き発言・重要systemは必ず残す
   while (totalLength > 5000 && msgs.length > 8) {
     for (let i = 0; i < msgs.length - 6; i++) {
-      if (msgs[i].role !== 'system') {
+      // エンティティ付き発言・systemメッセージは絶対に消さない
+      if (msgs[i].role !== 'system' && !msgs[i].entities?.urls?.length) {
         msgs.splice(i, 1);
         break;
       }
@@ -583,12 +594,19 @@ export async function runPipeline(action, { message, flags, supabase }) {
     }
     // --- 指示語検知時もsystemメッセージをhistoryの先頭に必ず残す ---
     if (referPrevUrlPattern.test(message.content)) {
-      // 履歴から直近のURL・タイトル・発言者を抽出
+      // entities付き履歴から直近のURLを抽出
       let prevUrl = null;
       let prevUser = null;
       let prevTitle = null;
       for (let i = history.length - 1; i >= 0; i--) {
         const h = history[i];
+        // entities優先
+        if (h.entities?.urls?.length) {
+          prevUrl = h.entities.urls[h.entities.urls.length - 1];
+          prevUser = h.name || getUserDisplayName(message) || message.author.username;
+          break;
+        }
+        // fallback: 旧ロジック
         if (h.role === 'user' && h.content) {
           const found = h.content.match(urlRegex);
           if (found && found.length > 0) {
