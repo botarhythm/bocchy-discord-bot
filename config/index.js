@@ -1,3 +1,4 @@
+// このファイルはアーカイブ用です。現行コードでは使用されていません。
 // config/index.ts
 // ボットの設定定数を環境変数から一元管理するよ🍃
 import dotenv from 'dotenv';

@@ -1,3 +1,4 @@
+// このファイルはアーカイブ用です。現行コードでは使用されていません。
 // Bocchy Bot ルール・運用・MCP・GitHub情報集約
 
 const coreRules = {

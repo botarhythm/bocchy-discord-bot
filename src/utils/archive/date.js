@@ -1,3 +1,4 @@
+// このファイルはアーカイブ用です。現行コードでは使用されていません。
 export function getNowJST() {
   // 日本時間の現在日時を返すよ🍃
   return new Date(new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }));
