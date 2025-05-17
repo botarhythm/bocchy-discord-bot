@@ -708,8 +708,9 @@ export async function runPipeline(action, { message, flags, supabase }) {
     }
     // --- キャラクタープロンプト/systemメッセージでhistory参照の強制をさらに強調 ---
     const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext)
-      + '\n【最重要】指示語（さっきのニュース、さっきのURL、前の話題、どうして、なぜ等）が出た場合は、history内の【直前のニュース要約】【直前の話題URL】【直前のニュースタイトル】systemメッセージを必ず参照し、内容を踏まえて回答してください。historyのsystemメッセージを最優先で参照してください。'
-      + '\n【最重要】history内の【ユーザーの意図推察】systemメッセージを必ず参照し、ユーザーの本当の意図・期待に沿った回答をしてください。';
+      + '\n【最重要】どんな質問・指示語・曖昧な表現でも、history内のsystemメッセージ（直前の話題・要約・課題・技術的文脈・意図推察など）を必ず最優先で参照し、その文脈に即した応答を生成してください。'
+      + '\n【推論指示】もし曖昧な質問や指示語が出た場合は、historyの直前の話題・要約・課題・文脈を根拠に推論し、最も自然な文脈的解釈で答えてください。'
+      + '\n【禁止事項】historyのsystemメッセージを無視したり、一般論や抽象的な返答に流れず、必ず文脈に即した具体的な応答を心がけてください。';
     const answer = await llmRespond(message.content, '', message, history, charPrompt);
     await message.reply(answer);
     if (supabase) await updateAffinity(supabase, userId, guildId, message.content);
