@@ -572,33 +572,70 @@ export async function runPipeline(action, { message, flags, supabase }) {
       }
       return;
     }
-    // --- 「さっきのURL」「前のURL」指示語を検知し、直前のURLをhistoryに明示的に追加 ---
-    const referPrevUrlPattern = /(さっきのURL|前のURL|先ほどのURL|上記のURL|そのURL|このURL)/i;
+    // --- 指示語パターンを徹底拡張（自然な日本語も網羅） ---
+    const referPrevUrlPattern = /(さっきのURL|前のURL|先ほどのURL|上記のURL|そのURL|このURL|さっきの.*サイト|前の.*ページ|その.*お店|コーヒーのサイト|さっきのニュース|前のリンク|その話題|その話|前の話題|さっきシェアしたニュース|さっき貼ったリンク|さっき送った記事|さっき送ったニュース|さっきのトピック|上の話題|上のリンク|上のニュース|直前の話題|直前のリンク|直前のニュース|さっきの投稿|さっきの共有|さっきのメッセージ|さっきの内容|さっきのやつ|上記の内容|上記のやつ|この話題|このニュース|このリンク)/i;
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
     let history = [];
     let userProfile = null;
     let globalContext = null;
     if (supabase) {
       history = await buildHistoryContext(supabase, userId, channelId, guildId, message.guild);
     }
+    // --- URL付き発言の直後にsystemメッセージを必ず挿入 ---
+    const urlsInMsg = message.content.match(urlRegex);
+    if (urlsInMsg && urlsInMsg.length > 0) {
+      // タイトル抽出（例：Yahooニュース等）
+      const titleMatch = message.content.match(/\n(.+?)\n/);
+      const prevTitle = titleMatch ? titleMatch[1] : '';
+      const sysMsg = `【直前の話題URL】${getUserDisplayName(message)}さんが「${urlsInMsg[0]}"${prevTitle ? `（${prevTitle}）` : ''}を紹介しました。以降の質問で『さっきのURL』『前のニュース』『その話題』『さっきシェアしたニュース』『さっき貼ったリンク』『上の話題』などが出た場合は必ずこれを参照してください。`;
+      history.push({ role: 'system', content: sysMsg });
+    }
+    // --- 指示語検知時もsystemメッセージをhistoryの先頭付近に必ず残す ---
     if (referPrevUrlPattern.test(message.content)) {
-      // 履歴から直近のURLを抽出
+      // 履歴から直近のURL・タイトル・発言者を抽出
       let prevUrl = null;
+      let prevUser = null;
+      let prevTitle = null;
       for (let i = history.length - 1; i >= 0; i--) {
         const h = history[i];
         if (h.role === 'user' && h.content) {
           const found = h.content.match(urlRegex);
           if (found && found.length > 0) {
             prevUrl = found[found.length - 1];
+            prevUser = h.name || getUserDisplayName(message) || message.author.username;
+            const titleMatch = h.content.match(/\n(.+?)\n/);
+            if (titleMatch) prevTitle = titleMatch[1];
             break;
           }
         }
       }
       if (prevUrl) {
-        // userメッセージとして「さっきのURL = ...」をhistoryに追加
-        history.push({ role: 'user', content: `さっきのURL = ${prevUrl}` });
+        let sysMsg = `【直前の話題URL】${prevUser}さんが「${prevUrl}"`;
+        if (prevTitle) sysMsg += `（${prevTitle}）`;
+        sysMsg += `を紹介しました。以降の質問で『さっきのURL』『前のニュース』『その話題』『さっきシェアしたニュース』『さっき貼ったリンク』『上の話題』などが出た場合は必ずこれを参照してください。`;
+        // 先頭付近に必ず残す
+        history.unshift({ role: 'system', content: sysMsg });
       }
     }
-    const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext);
+    // --- ChatGPT本家風: 直近のuser/assistantペア＋重要systemメッセージは必ず残す ---
+    // 圧縮時にsystemメッセージ（直前の話題URL）は絶対に消さない
+    const importantSystemMsgs = history.filter(h => h.role === 'system' && h.content && h.content.includes('直前の話題URL'));
+    // 直近3往復（6件）＋重要systemメッセージ
+    let trimmedHistory = [];
+    let userAssistantPairs = [];
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].role === 'user' || history[i].role === 'assistant') {
+        userAssistantPairs.unshift(history[i]);
+        if (userAssistantPairs.length >= 6) break;
+      }
+    }
+    trimmedHistory = [...importantSystemMsgs, ...userAssistantPairs];
+    // 重複除去
+    trimmedHistory = trimmedHistory.filter((v,i,a) => a.findIndex(t => t.role === v.role && t.content === v.content) === i);
+    // 以降はtrimmedHistoryをhistoryとして利用
+    history = trimmedHistory;
+    // --- キャラクタープロンプト/systemメッセージでhistory参照の強制を強調 ---
+    const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext) + '\n【重要】指示語（さっきのURL、前のニュース、上の話題など）が出た場合は、history内の【直前の話題URL】systemメッセージを必ず参照し、話題を取り違えないでください。';
     const answer = await llmRespond(message.content, '', message, history, charPrompt);
     await message.reply(answer);
     if (supabase) await updateAffinity(supabase, userId, guildId, message.content);
