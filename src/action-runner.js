@@ -528,6 +528,25 @@ export async function runPipeline(action, { message, flags, supabase }) {
     const guildId = message.guild?.id || null;
     // 親密度取得
     const affinity = supabase ? await getAffinity(supabase, userId, guildId) : 0;
+    // --- URLが含まれる場合は必ずクロール＆要約 ---
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const urls = message.content.match(urlRegex);
+    if (urls && urls.length > 0) {
+      for (const url of urls) {
+        try {
+          console.log(`[Webクロール開始] ${url}`);
+          const raw = await fetchPageContent(url);
+          console.log(`[Webクロール取得結果]`, raw?.slice?.(0, 200));
+          const summary = await summarizeWebPage(raw, message.content, message, buildCharacterPrompt(message, affinity));
+          await message.reply(`【${url}の要約】\n${summary}`);
+          console.log(`[Webクロール要約完了] ${url}`);
+        } catch (e) {
+          console.error(`[Webクロール失敗] ${url}`, e);
+          await message.reply(`URLクロール・要約に失敗しました: ${e.message || e}`);
+        }
+      }
+      return;
+    }
     // 検索アクション
     if (action === 'search') {
       const userPrompt = message.content;
@@ -538,18 +557,15 @@ export async function runPipeline(action, { message, flags, supabase }) {
       return;
     }
     // --- 通常会話（雑談） ---
-    // 履歴・プロファイル・グローバル文脈を取得
     let history = [];
     let userProfile = null;
     let globalContext = null;
     if (supabase) {
       history = await buildHistoryContext(supabase, userId, channelId, guildId, message.guild);
-      // buildHistoryContext内でuserProfile, globalContextも取得できる設計ならそちらを利用
     }
     const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext);
     const answer = await llmRespond(message.content, '', message, history, charPrompt);
     await message.reply(answer);
-    // 親密度更新
     if (supabase) await updateAffinity(supabase, userId, guildId, message.content);
     if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
   } catch (err) {
