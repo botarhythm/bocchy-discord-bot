@@ -1,4 +1,4 @@
-import { openai } from '../services/openai';
+import { openai, queuedOpenAI } from '../services/openai';
 import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 /**
@@ -13,10 +13,10 @@ export async function reflectiveCheck(userPrompt: string, botReply: string): Pro
     { role: 'system', content: systemPrompt },
     { role: 'user', content: `ユーザー: ${userPrompt}\nボット: ${botReply}` }
   ];
-  const res = await openai.chat.completions.create({
+  const res = await queuedOpenAI(() => openai.chat.completions.create({
     model: 'gpt-4.1-nano-2025-04-14',
     messages,
-  });
+  }));
   const content = res.choices[0]?.message?.content?.trim() || '';
   if (content === 'OK' || content === 'ok' || content.includes('問題ありません')) {
     return { ok: true };

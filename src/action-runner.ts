@@ -14,7 +14,7 @@ import { logInterventionDecision } from './index';
 import axios from 'axios';
 import { updateUserProfileSummaryFromHistory } from './utils/userProfile';
 import puppeteer from 'puppeteer';
-import { openai } from './services/openai';
+import { openai, queuedOpenAI } from './services/openai';
 import { supabase } from './services/supabase';
 import { Message, Guild, Client } from 'discord.js';
 import { SupabaseClient } from '@supabase/supabase-js';
@@ -71,7 +71,7 @@ async function extractEntitiesLLM(text: string): Promise<Record<string, any>> {
   if (!text || text.length < 2) return {};
   const prompt = `次のテキストから「人名」「組織名」「政策名」「イベント名」「話題」「URL」など重要なエンティティをJSON形式で抽出してください。\nテキスト: ${text}\n出力例: {"persons": ["大谷翔平"], "organizations": ["ムーディーズ"], "policies": ["財政赤字"], "events": ["米国債格下げ"], "topics": ["米国経済"], "urls": ["https://..."]}`;
   try {
-    const res = await openai.chat.completions.create({
+    const res = await await queuedOpenAI(() => openai.chat.completions.create({
       model: "gpt-4.1-nano-2025-04-14",
       messages: [
         { role: "system", content: "あなたはエンティティ抽出AIです。" },
@@ -79,7 +79,7 @@ async function extractEntitiesLLM(text: string): Promise<Record<string, any>> {
       ],
       max_tokens: 256,
       temperature: 0.0
-    });
+    }));
     const content = res.choices[0]?.message?.content?.trim() || "";
     const json = content.match(/\{[\s\S]*\}/)?.[0];
     if (json) return JSON.parse(json);
@@ -199,10 +199,10 @@ export async function buildHistoryContext(
     const lastUserMsg = recent.length > 0 ? recent[recent.length-1].user : '';
     let embedding = null;
     if (lastUserMsg) {
-      const embRes = await openai.embeddings.create({
-        model: 'text-embedding-ada-002',
+      const embRes = await queuedOpenAI(() => openai.embeddings.create({
+        model: 'text-embedding-3-small',
         input: lastUserMsg
-      });
+      }));
       embedding = embRes.data[0].embedding;
     }
     if (embedding) {
@@ -302,7 +302,7 @@ export async function buildHistoryContext(
     const conversationText = allHistory.map(h => `ユーザー: ${h.user || ''}\nボッチー: ${h.bot || ''}`).join('\n');
     const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const prompt = `以下は直近の会話履歴です。このやりとり全体から「会話の流れ要約」「未解決の問い」「ユーザーの期待」「感情トーン」を日本語で簡潔に抽出し、JSONで出力してください。\n---\n${conversationText}\n---\n出力例: {\"topic\":\"...\",\"unresolved\":\"...\",\"expectation\":\"...\",\"tone\":\"...\"}`;
-    const res = await openai.chat.completions.create({
+    const res = await await queuedOpenAI(() => openai.chat.completions.create({
       model: 'gpt-4.1-nano-2025-04-14',
       messages: [
         { role: 'system', content: 'あなたは会話要約AIです。' },
@@ -310,7 +310,7 @@ export async function buildHistoryContext(
       ],
       max_tokens: 256,
       temperature: 0.2
-    });
+    }));
     const content = res.choices[0]?.message?.content?.trim() || '';
     const json = content.match(/\{[\s\S]*\}/)?.[0];
     if (json) {
@@ -330,7 +330,7 @@ export async function buildHistoryContext(
     const conversationText = allHistory.map(h => `ユーザー: ${h.user || ''}\nボッチー: ${h.bot || ''}`).join('\n');
     const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const metaPrompt = `以下の会話履歴から「現在の話題」「直前の課題」「技術的文脈や会話の一貫性」を日本語で簡潔に抽出し、JSONで出力してください。\n---\n${conversationText}\n---\n出力例: {\"currentTopic\":\"...\",\"currentIssue\":\"...\",\"contextMeta\":\"...\"}`;
-    const res = await openai.chat.completions.create({
+    const res = await await queuedOpenAI(() => openai.chat.completions.create({
       model: 'gpt-4.1-nano-2025-04-14',
       messages: [
         { role: 'system', content: 'あなたは会話分脈抽出AIです。' },
@@ -338,7 +338,7 @@ export async function buildHistoryContext(
       ],
       max_tokens: 256,
       temperature: 0.2
-    });
+    }));
     const content = res.choices[0]?.message?.content?.trim() || '';
     const json = content.match(/\{[\s\S]*\}/)?.[0];
     if (json) {
@@ -358,7 +358,7 @@ export async function buildHistoryContext(
     if (lastUserMsg && lastUserMsg.length > 2) {
       const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
       const multiIntentPrompt = `次のユーザー発言から「考えられる複数の意図・期待・関心」を日本語で3つ程度、推論し、JSON配列で出力してください。\n---\n${lastUserMsg}\n---\n出力例: [\"人気の豆を知りたい\", \"産地や焙煎方法に興味がある\", \"おすすめを探している\"]`;
-      const res = await openai.chat.completions.create({
+      const res = await await queuedOpenAI(() => openai.chat.completions.create({
         model: 'gpt-4.1-nano-2025-04-14',
         messages: [
           { role: 'system', content: 'あなたは多角的推論AIです。' },
@@ -366,7 +366,7 @@ export async function buildHistoryContext(
         ],
         max_tokens: 128,
         temperature: 0.3
-      });
+      }));
       const content = res.choices[0]?.message?.content?.trim() || '';
       const arr = content.match(/\[.*\]/s)?.[0];
       if (arr) {
@@ -512,10 +512,10 @@ async function llmRespond(prompt: string, systemPrompt: string = "", message: Me
     ...history
   ];
   messages.push({ role: "user", content: prompt });
-  const completion = await openai.chat.completions.create({
+  const completion = await await queuedOpenAI(() => openai.chat.completions.create({
     model: "gpt-4.1-nano-2025-04-14",
     messages
-  });
+  }));
   return completion.choices[0]?.message?.content || "ごめんなさい、うまく答えられませんでした。";
 }
 
@@ -772,7 +772,7 @@ export async function shouldContextuallyIntervene(history: any[], globalContext:
   const prompt = `以下はDiscordの会話履歴です。今このタイミングでAIが自然に介入（発言）すべきか判定してください。\n---\n${contextStr}\n${formatted}\n---\n【質問】今AIが介入すべきですか？（はい/いいえで答え、理由も簡潔に日本語で述べてください）`;
   try {
     const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const res = await openai.chat.completions.create({
+    const res = await await queuedOpenAI(() => openai.chat.completions.create({
       model: 'gpt-4.1-nano-2025-04-14',
       messages: [
         { role: 'system', content: 'あなたは会話介入判定AIです。' },
@@ -780,7 +780,7 @@ export async function shouldContextuallyIntervene(history: any[], globalContext:
       ],
       max_tokens: 64,
       temperature: 0.0
-    });
+    }));
     const content = res.choices[0]?.message?.content?.trim() || '';
     const intervene = /^はい/.test(content);
     return { intervene, reason: content };
