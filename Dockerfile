@@ -8,7 +8,7 @@ COPY src ./src
 COPY tsconfig.json ./
 
 RUN npm install --production=false
-RUN npm run build || (echo 'build failed' && ls -l dist && ls -l dist/services && cat dist/*.js && cat dist/services/*.js)
+RUN npm run build || (echo 'build failed' && find /app -type f && ls -l /app/dist || true && ls -l /app/dist/services || true && cat /app/npm-debug.log || true)
 RUN ls -l dist || true
 RUN ls -l dist/services || true
 
