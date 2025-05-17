@@ -482,9 +482,49 @@ async function enhancedSearch(userPrompt, message, affinity, supabase) {
   return { answer, results: pageContents };
 }
 
-// ダミー実装: runPipeline, shouldContextuallyIntervene
-export function runPipeline() {
-  throw new Error('runPipelineは未実装です。src/action-runner.jsで実装してください。');
+// --- saveHistory: 履歴保存の簡易実装 ---
+async function saveHistory(supabase, message, userMsg, botMsg, affinity) {
+  if (!supabase) return;
+  try {
+    const userId = message.author.id;
+    const channelId = message.channel?.id;
+    const guildId = message.guild?.id || null;
+    // conversation_historiesに追記
+    await supabase.from('conversation_histories').upsert({
+      user_id: userId,
+      channel_id: channelId,
+      guild_id: guildId,
+      messages: [{ user: userMsg, bot: botMsg, affinity, timestamp: new Date().toISOString() }],
+      updated_at: new Date().toISOString()
+    }, { onConflict: ['user_id', 'channel_id', 'guild_id'] });
+  } catch (e) {
+    console.warn('[saveHistory] 履歴保存エラー:', e);
+  }
+}
+
+// --- runPipeline本実装 ---
+export async function runPipeline(action, { message, flags, supabase }) {
+  try {
+    const userId = message.author.id;
+    const channelId = message.channel?.id;
+    const guildId = message.guild?.id || null;
+    // 親密度取得
+    const affinity = supabase ? await getAffinity(supabase, userId, guildId) : 0;
+    // 検索アクション
+    if (action === 'search') {
+      const userPrompt = message.content;
+      const result = await enhancedSearch(userPrompt, message, affinity, supabase);
+      await message.reply(result.answer);
+      // 親密度更新
+      if (supabase) await updateAffinity(supabase, userId, guildId, userPrompt);
+      return;
+    }
+    // その他アクション（今後拡張）
+    await message.reply('まだ対応していないアクションです。');
+  } catch (err) {
+    console.error('[runPipelineエラー]', err);
+    await message.reply('エラーが発生しました。管理者にご連絡ください。');
+  }
 }
 
 export function shouldContextuallyIntervene() {
