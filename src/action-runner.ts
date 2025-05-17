@@ -165,46 +165,22 @@ export async function buildHistoryContext(
 ): Promise<any[]> {
   if (!supabase) return [];
   // 1) 直近詳細 n＝SHORT_TURNS（チャンネル単位）
-  const { data: hist } = await supabase
-    .from('conversation_histories')
-    .select('messages')
-    .eq('user_id', userId)
-    .eq('channel_id', channelId)
-    .maybeSingle();
+  const { data } = await supabase.from('conversation_histories').select('messages').eq('user_id', userId).eq('channel_id', channelId).maybeSingle() as any;
   // recentは最大8件（4往復）
-  const recent = (hist?.messages ?? []).slice(-8);
+  const recent = (data?.messages ?? []).slice(-8);
 
   // 2) それ以前は「150 字要約」1 件だけ（チャンネル単位）
-  const { data: sum } = await supabase
-    .from('conversation_summaries')
-    .select('summary')
-    .eq('user_id', userId)
-    .eq('channel_id', channelId)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const { data: sum } = await supabase.from('conversation_summaries').select('summary').eq('user_id', userId).eq('channel_id', channelId).order('created_at', { ascending: false }).limit(1).maybeSingle() as any;
 
   // 3) サーバー全体の要約・履歴も取得
   let guildSummary = null;
   let guildRecent = [];
   let guildAllMessages = [];
   if (guildId) {
-    const { data: gsum } = await supabase
-      .from('conversation_summaries')
-      .select('summary')
-      .eq('guild_id', guildId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const { data: gsum } = await supabase.from('conversation_summaries').select('summary').eq('guild_id', guildId).order('created_at', { ascending: false }).limit(1).maybeSingle() as any;
     guildSummary = gsum?.summary;
 
-    const { data: ghist } = await supabase
-      .from('conversation_histories')
-      .select('messages')
-      .eq('guild_id', guildId)
-      .order('updated_at', { ascending: false })
-      .limit(10)
-      .maybeSingle();
+    const { data: ghist } = await supabase.from('conversation_histories').select('messages').eq('guild_id', guildId).order('updated_at', { ascending: false }).limit(10).maybeSingle() as any;
     // guildRecentも最大2件（1往復）
     guildRecent = (ghist?.messages ?? []).slice(-2);
     guildAllMessages = (ghist?.messages ?? []);
@@ -213,12 +189,7 @@ export async function buildHistoryContext(
   // 4) ユーザープロファイル取得
   let userProfile = null;
   try {
-    const { data: profile } = await supabase
-      .from('user_profiles')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('guild_id', guildId)
-      .maybeSingle();
+    const { data: profile } = await supabase.from('user_profiles').select('*').eq('user_id', userId).eq('guild_id', guildId).maybeSingle() as any;
     userProfile = profile;
   } catch (e) { userProfile = null; }
 
@@ -453,8 +424,10 @@ export async function fetchPageContent(url: string): Promise<string> {
     errorMsg += '\n';
   }
   // 2. fetch+cheerioで静的HTML抽出
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
   try {
-    const res = await fetch(url, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; DiscordBot/1.0; +https://github.com/botarhythm/bocchy-discord-bot)' } });
+    const res = await fetch(url, { signal: controller.signal });
     const html = await res.text();
     const $ = load(html);
     const title = $('title').text();
@@ -471,6 +444,8 @@ export async function fetchPageContent(url: string): Promise<string> {
     let errorMsg = '[fetch/cheerio失敗]';
     if (typeof e === 'object' && e && 'message' in e) errorMsg += `: ${(e as any).message}`;
     return errorMsg || '';
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -501,7 +476,7 @@ async function googleSearch(query: string, attempt: number = 0): Promise<any[]> 
   const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}` +
               `&q=${encodeURIComponent(query)}&hl=ja&gl=jp&lr=lang_ja&sort=date`;
   const res = await fetch(url);
-  const data = await res.json();
+  const data = await res.json() as any;
   if (!data.items || data.items.length === 0) {
     return [];
   }
@@ -620,12 +595,18 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
   let pageContents = await Promise.all(
     allResults.map(async r => {
       try {
-        const res = await fetch(r.link, { timeout: 10000 });
-        const html = await res.text();
-        const $ = load(html);
-        let text = $('p').slice(0,5).map((i,el) => $(el).text()).get().join('\n');
-        if (!text.trim()) text = r.snippet || '';
-        return { title: r.title, text, link: r.link, snippet: r.snippet };
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        try {
+          const res = await fetch(r.link, { signal: controller.signal });
+          const html = await res.text();
+          const $ = load(html);
+          let text = $('p').slice(0,5).map((i,el) => $(el).text()).get().join('\n');
+          if (!text.trim()) text = r.snippet || '';
+          return { title: r.title, text, link: r.link, snippet: r.snippet };
+        } finally {
+          clearTimeout(timeoutId);
+        }
       } catch {
         return { title: r.title, text: r.snippet || '', link: r.link, snippet: r.snippet };
       }
