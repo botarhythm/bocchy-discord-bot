@@ -11,5 +11,21 @@ export const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const openaiQueue = new PQueue({ interval: 60_000, intervalCap: 60 });
 
 export async function queuedOpenAI<T>(fn: () => Promise<T>): Promise<T> {
-  return openaiQueue.add(fn);
+  let attempt = 0;
+  const maxAttempts = 5;
+  let delay = 1000;
+  while (true) {
+    try {
+      return await openaiQueue.add(fn);
+    } catch (err: any) {
+      const code = err?.status || err?.code || err?.response?.status;
+      if ((code === 429 || code === 502) && attempt < maxAttempts) {
+        await new Promise(res => setTimeout(res, delay));
+        attempt++;
+        delay *= 2; // Exponential backoff
+        continue;
+      }
+      throw err;
+    }
+  }
 } 

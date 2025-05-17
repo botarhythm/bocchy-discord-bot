@@ -19,6 +19,7 @@ import { supabase } from './services/supabase';
 import { Message, Guild, Client } from 'discord.js';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import LRU from 'lru-cache';
 
 // --- 型定義 ---
 export interface UserProfile {
@@ -45,6 +46,10 @@ const bocchyConfig = yaml.load(fs.readFileSync('bocchy-character.yaml', 'utf8'))
 
 // --- URL抽出用: グローバルで1回だけ宣言 ---
 const urlRegex = /(https?:\/\/[^\s]+)/g;
+
+// --- LRUキャッシュ（summary/embedding用） ---
+const summaryCache = new LRU<string, any>({ max: 256, ttl: 1000 * 60 * 10 }); // 10分
+const embeddingCache = new LRU<string, any>({ max: 256, ttl: 1000 * 60 * 10 }); // 10分
 
 // --- エンティティ抽出（URL＋人名＋イベント＋スポーツ種別） ---
 function extractEntities(text: string): {
@@ -166,22 +171,38 @@ export async function buildHistoryContext(
   if (!supabase) return [];
   // 1) 直近詳細 n＝SHORT_TURNS（チャンネル単位）
   const { data } = await supabase.from('conversation_histories').select('messages').eq('user_id', userId).eq('channel_id', channelId).maybeSingle() as any;
-  // recentは最大8件（4往復）
   const recent = (data?.messages ?? []).slice(-8);
 
   // 2) それ以前は「150 字要約」1 件だけ（チャンネル単位）
-  const { data: sum } = await supabase.from('conversation_summaries').select('summary').eq('user_id', userId).eq('channel_id', channelId).order('created_at', { ascending: false }).limit(1).maybeSingle() as any;
+  const summaryKey = `summary:${userId}:${channelId}`;
+  let sum = summaryCache.get(summaryKey);
+  if (!sum) {
+    const { data: sumData } = await supabase.from('conversation_summaries').select('summary').eq('user_id', userId).eq('channel_id', channelId).order('created_at', { ascending: false }).limit(1).maybeSingle() as any;
+    sum = sumData;
+    if (sum) summaryCache.set(summaryKey, sum);
+  }
 
   // 3) サーバー全体の要約・履歴も取得
   let guildSummary = null;
   let guildRecent = [];
   let guildAllMessages = [];
   if (guildId) {
-    const { data: gsum } = await supabase.from('conversation_summaries').select('summary').eq('guild_id', guildId).order('created_at', { ascending: false }).limit(1).maybeSingle() as any;
+    const guildSummaryKey = `guildSummary:${guildId}`;
+    let gsum = summaryCache.get(guildSummaryKey);
+    if (!gsum) {
+      const { data: gsumData } = await supabase.from('conversation_summaries').select('summary').eq('guild_id', guildId).order('created_at', { ascending: false }).limit(1).maybeSingle() as any;
+      gsum = gsumData;
+      if (gsum) summaryCache.set(guildSummaryKey, gsum);
+    }
     guildSummary = gsum?.summary;
 
-    const { data: ghist } = await supabase.from('conversation_histories').select('messages').eq('guild_id', guildId).order('updated_at', { ascending: false }).limit(10).maybeSingle() as any;
-    // guildRecentも最大2件（1往復）
+    const guildRecentKey = `guildRecent:${guildId}`;
+    let ghist = summaryCache.get(guildRecentKey);
+    if (!ghist) {
+      const { data: ghistData } = await supabase.from('conversation_histories').select('messages').eq('guild_id', guildId).order('updated_at', { ascending: false }).limit(10).maybeSingle() as any;
+      ghist = ghistData;
+      if (ghist) summaryCache.set(guildRecentKey, ghist);
+    }
     guildRecent = (ghist?.messages ?? []).slice(-2);
     guildAllMessages = (ghist?.messages ?? []);
   }
@@ -189,8 +210,13 @@ export async function buildHistoryContext(
   // 4) ユーザープロファイル取得
   let userProfile = null;
   try {
-    const { data: profile } = await supabase.from('user_profiles').select('*').eq('user_id', userId).eq('guild_id', guildId).maybeSingle() as any;
-    userProfile = profile;
+    const userProfileKey = `profile:${userId}:${guildId}`;
+    userProfile = summaryCache.get(userProfileKey);
+    if (!userProfile) {
+      const { data: profile } = await supabase.from('user_profiles').select('*').eq('user_id', userId).eq('guild_id', guildId).maybeSingle() as any;
+      userProfile = profile;
+      if (userProfile) summaryCache.set(userProfileKey, userProfile);
+    }
   } catch (e) { userProfile = null; }
 
   // 5) ベクトル類似検索でパーソナライズ履歴取得（最大2件）
@@ -198,12 +224,15 @@ export async function buildHistoryContext(
   try {
     const lastUserMsg = recent.length > 0 ? recent[recent.length-1].user : '';
     let embedding = null;
-    if (lastUserMsg) {
+    const embeddingKey = `embedding:${userId}:${guildId}:${lastUserMsg}`;
+    embedding = embeddingCache.get(embeddingKey);
+    if (!embedding && lastUserMsg) {
       const embRes = await queuedOpenAI(() => openai.embeddings.create({
         model: 'text-embedding-3-small',
         input: lastUserMsg
       }));
       embedding = embRes.data[0].embedding;
+      if (embedding) embeddingCache.set(embeddingKey, embedding);
     }
     if (embedding) {
       const { data: simRows } = await supabase.rpc('match_user_interactions', {

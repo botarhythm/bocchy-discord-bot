@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Partials, ChannelType, Message, Guild, PartialMessage, TextChannel } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ChannelType, Message, Guild, PartialMessage, TextChannel, Interaction, ChatInputCommandInteraction } from "discord.js";
 import dotenv from "dotenv";
 import { openai } from './services/openai';
 import { supabase } from './services/supabase';
@@ -289,6 +289,57 @@ async function generateInterventionMessage(history: Message[]): Promise<string> 
   });
   return res.choices[0]?.message?.content?.trim() || '';
 }
+
+client.on('interactionCreate', async (interaction: Interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  const chatInteraction = interaction as ChatInputCommandInteraction;
+  if (chatInteraction.commandName !== 'ask') return;
+  const userPrompt = chatInteraction.options.getString('prompt', true);
+  await chatInteraction.deferReply();
+  // build context (最小限: ユーザーID, チャンネルID, ギルドID)
+  const userId = chatInteraction.user.id;
+  const channelId = chatInteraction.channelId;
+  const guildId = chatInteraction.guildId || '';
+  // supabase, affinity, history等はrunPipeline相当で取得
+  let affinity = 0;
+  let history = [];
+  if (supabase) {
+    affinity = await getAffinity(userId, guildId);
+    history = await buildHistoryContext(supabase, userId, channelId, guildId, chatInteraction.guild);
+  }
+  const charPrompt = buildCharacterPrompt(chatInteraction, affinity);
+  // OpenAIストリーミング
+  let replyMsg = await chatInteraction.fetchReply();
+  let content = '';
+  try {
+    const stream = await openai.chat.completions.create({
+      model: 'gpt-4.1-nano-2025-04-14',
+      messages: [
+        { role: 'system', content: charPrompt },
+        ...history,
+        { role: 'user', content: userPrompt }
+      ],
+      stream: true,
+    });
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta?.content || '';
+      if (delta) {
+        content += delta;
+        // 10文字ごとにedit（rate limit対策）
+        if (content.length % 10 === 0) {
+          await chatInteraction.editReply(content);
+        }
+      }
+    }
+    // 最終反映
+    await chatInteraction.editReply(content);
+    if (supabase) await updateAffinity(userId, guildId, userPrompt);
+    if (supabase) await saveHistory(supabase, replyMsg, userPrompt, content, affinity);
+  } catch (err) {
+    await chatInteraction.editReply('エラーが発生しました。管理者にご連絡ください。');
+    console.error('[ストリーミング応答エラー]', err);
+  }
+});
 
 client.login(process.env.DISCORD_TOKEN);
 
