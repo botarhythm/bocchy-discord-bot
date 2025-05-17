@@ -531,12 +531,17 @@ export async function runPipeline(action, { message, flags, supabase }) {
     // --- URLが含まれる場合は必ずクロール＆要約 ---
     const urlRegex = /(https?:\/\/[^\s]+)/g;
     const urls = message.content.match(urlRegex);
+    console.log('[デバッグ] runPipeline: message.content =', message.content);
+    console.log('[デバッグ] runPipeline: 検出URL =', urls);
     if (urls && urls.length > 0) {
       for (const url of urls) {
         try {
           console.log(`[Webクロール開始] ${url}`);
           const raw = await fetchPageContent(url);
           console.log(`[Webクロール取得結果]`, raw?.slice?.(0, 200));
+          if (!raw || raw.length < 30) {
+            console.warn(`[デバッグ] fetchPageContent失敗または内容短すぎ: url=${url}, raw=${raw}`);
+          }
           const summary = await summarizeWebPage(raw, message.content, message, buildCharacterPrompt(message, affinity));
           await message.reply(`【${url}の要約】\n${summary}`);
           console.log(`[Webクロール要約完了] ${url}`);
