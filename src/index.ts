@@ -2,8 +2,8 @@ import { Client, GatewayIntentBits, Partials, ChannelType, Message, Guild, Parti
 import dotenv from "dotenv";
 import { openai } from './services/openai';
 import { supabase } from './services/supabase';
-import { detectFlags } from "./flag-detector.js";
-import { pickAction } from "./decision-engine.js";
+import { detectFlags } from "./flag-detector";
+import { pickAction } from "./decision-engine";
 import { runPipeline, shouldContextuallyIntervene, buildHistoryContext, getAffinity, buildCharacterPrompt, updateAffinity, saveHistory } from "./action-runner";
 import http from 'http';
 import { BOT_CHAT_CHANNEL, MAX_ACTIVE_TURNS, MAX_BOT_CONVO_TURNS, MAX_DAILY_RESPONSES, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END, EMERGENCY_STOP } from '../config/index';
@@ -183,6 +183,7 @@ client.on("messageCreate", async (message) => {
     if (client.user && message.author.id === client.user.id) return;
     const flags = detectFlags(message, client);
     const action = pickAction(flags);
+    if (!action) return;
     try {
       await runPipeline(action, { message, flags, supabase });
     } catch (err) {
@@ -215,6 +216,7 @@ client.on("messageCreate", async (message) => {
   if (isHuman) {
     const flags = detectFlags(message, client);
     const action = pickAction(flags);
+    if (!action) return;
     try {
       await runPipeline(action, { message, flags, supabase });
     } catch (err) {
@@ -248,6 +250,7 @@ client.on("messageCreate", async (message) => {
     }
     const flags = detectFlags(message, client);
     const action = pickAction(flags);
+    if (!action) return;
     try {
       await runPipeline(action, { message, flags, supabase });
     } catch (err) {

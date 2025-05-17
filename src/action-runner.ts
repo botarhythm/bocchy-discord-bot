@@ -5,7 +5,7 @@ import { load } from 'cheerio';
 import { OpenAI } from 'openai';
 import yaml from 'js-yaml';
 import fs from 'fs';
-import { resolveGuildId } from './utils/resolveGuildId';
+import { resolveGuildId } from './utils/archive/resolveGuildId.js';
 import { getAffinity, updateAffinity } from './utils/affinity';
 import { getSentiment } from './utils/sentimentAnalyzer';
 import { analyzeGlobalContext } from './utils/analyzeGlobalContext';
