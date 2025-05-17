@@ -519,8 +519,21 @@ export async function runPipeline(action, { message, flags, supabase }) {
       if (supabase) await updateAffinity(supabase, userId, guildId, userPrompt);
       return;
     }
-    // その他アクション（今後拡張）
-    await message.reply('まだ対応していないアクションです。');
+    // --- 通常会話（雑談） ---
+    // 履歴・プロファイル・グローバル文脈を取得
+    let history = [];
+    let userProfile = null;
+    let globalContext = null;
+    if (supabase) {
+      history = await buildHistoryContext(supabase, userId, channelId, guildId, message.guild);
+      // buildHistoryContext内でuserProfile, globalContextも取得できる設計ならそちらを利用
+    }
+    const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext);
+    const answer = await llmRespond(message.content, '', message, history, charPrompt);
+    await message.reply(answer);
+    // 親密度更新
+    if (supabase) await updateAffinity(supabase, userId, guildId, message.content);
+    if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
   } catch (err) {
     console.error('[runPipelineエラー]', err);
     await message.reply('エラーが発生しました。管理者にご連絡ください。');
