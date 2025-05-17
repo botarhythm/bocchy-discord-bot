@@ -33,6 +33,7 @@
     "node": ">=20"
   },
   "packageManager": "pnpm@8.15.5",
+  "files": ["src"],
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "chai": "^5.2.0",
