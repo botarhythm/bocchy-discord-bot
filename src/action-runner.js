@@ -572,21 +572,31 @@ export async function runPipeline(action, { message, flags, supabase }) {
       }
       return;
     }
-    // 検索アクション
-    if (action === 'search') {
-      const userPrompt = message.content;
-      const result = await enhancedSearch(userPrompt, message, affinity, supabase);
-      await message.reply(result.answer);
-      // 親密度更新
-      if (supabase) await updateAffinity(supabase, userId, guildId, userPrompt);
-      return;
-    }
-    // --- 通常会話（雑談） ---
+    // --- 「さっきのURL」「前のURL」指示語を検知し、直前のURLをhistoryに明示的に追加 ---
+    const referPrevUrlPattern = /(さっきのURL|前のURL|先ほどのURL|上記のURL|そのURL|このURL)/i;
     let history = [];
     let userProfile = null;
     let globalContext = null;
     if (supabase) {
       history = await buildHistoryContext(supabase, userId, channelId, guildId, message.guild);
+    }
+    if (referPrevUrlPattern.test(message.content)) {
+      // 履歴から直近のURLを抽出
+      let prevUrl = null;
+      for (let i = history.length - 1; i >= 0; i--) {
+        const h = history[i];
+        if (h.role === 'user' && h.content) {
+          const found = h.content.match(urlRegex);
+          if (found && found.length > 0) {
+            prevUrl = found[found.length - 1];
+            break;
+          }
+        }
+      }
+      if (prevUrl) {
+        // userメッセージとして「さっきのURL = ...」をhistoryに追加
+        history.push({ role: 'user', content: `さっきのURL = ${prevUrl}` });
+      }
     }
     const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext);
     const answer = await llmRespond(message.content, '', message, history, charPrompt);
