@@ -15,4 +15,5 @@ test/
 !supabase/
 !supabase/affinity.sql
 _archive/
+dist/
 
