@@ -327,12 +327,33 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
     }
     totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
   }
-  // --- 直前の会話要約をsystemで追加（重複防止） ---
-  if (latestPairs.length > 0) {
+  // --- 追加: 直前の会話ペアから「話題要約・質問意図・期待される次の話題」をLLMで抽出し、systemメッセージとして挿入 ---
+  if (latestPairs.length >= 2) {
     const lastUser = latestPairs[latestPairs.length-2]?.user || '';
     const lastBot = latestPairs[latestPairs.length-1]?.bot || '';
-    if (lastUser || lastBot) {
-      msgs.push({ role: 'system', content: `【直前の会話要約】ユーザー:「${lastUser}」→ボッチー:「${lastBot}」` });
+    const contextText = `ユーザー: ${lastUser}\nボッチー: ${lastBot}`;
+    try {
+      const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      const prompt = `以下は直前の会話ペアです。このやりとりから「話題要約」「質問意図」「期待される次の話題」を日本語で簡潔に抽出し、JSONで出力してください。\n---\n${contextText}\n---\n出力例: {"topic":"...","intent":"...","next_topic":"..."}`;
+      const res = await openai.chat.completions.create({
+        model: 'gpt-4.1-nano-2025-04-14',
+        messages: [
+          { role: 'system', content: 'あなたは会話要約AIです。' },
+          { role: 'user', content: prompt }
+        ],
+        max_tokens: 128,
+        temperature: 0.2
+      });
+      const content = res.choices[0]?.message?.content?.trim() || '';
+      const json = content.match(/\{[\s\S]*\}/)?.[0];
+      if (json) {
+        const obj = JSON.parse(json);
+        if (obj.topic) msgs.push({ role: 'system', content: `【直前の話題要約】${obj.topic}` });
+        if (obj.intent) msgs.push({ role: 'system', content: `【直前の質問・意図】${obj.intent}` });
+        if (obj.next_topic) msgs.push({ role: 'system', content: `【期待される次の話題】${obj.next_topic}` });
+      }
+    } catch (e) {
+      console.warn('[buildHistoryContext] 直前会話ペア要約LLM失敗', e);
     }
   }
   return msgs;
