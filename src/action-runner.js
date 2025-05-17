@@ -243,10 +243,20 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   const allHistory = [...guildRecent, ...personalizedHistory, ...recent];
   // 直近3往復（6件）は必ず残す
   const latestPairs = allHistory.slice(-6);
-  latestPairs.forEach((t, i) => {
+  // 直前のユーザー発言にURLが含まれていればsystemで明示（直後に挿入）
+  for (let i = 0; i < latestPairs.length; i++) {
+    const t = latestPairs[i];
     if (t.user) msgs.push({ role: 'user', content: t.user });
     if (t.bot) msgs.push({ role: 'assistant', content: t.bot });
-  });
+    // 直後にsystemメッセージを挿入
+    if (t.user) {
+      const urlRegex = /(https?:\/\/[^\s]+)/g;
+      const urlsInUser = t.user.match(urlRegex);
+      if (urlsInUser && urlsInUser.length > 0) {
+        msgs.push({ role: 'system', content: `【直前の話題URL】この会話の直前で話題になっていたURLは「${urlsInUser.join(', ')}」です。以降の質問で『さっきのURL』や『前の話題』とあれば必ずこれを参照してください。` });
+      }
+    }
+  }
   // --- それ以前の履歴は圧縮・要約のみ ---
   if (sum?.summary) {
     msgs.push({ role: 'system', content: `【要約】${sum.summary}` });
@@ -255,7 +265,6 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   let totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
   // 直近3往復＋要約・プロファイルは必ず残す
   while (totalLength > 5000 && msgs.length > 8) {
-    // system以外から古いものを削除
     for (let i = 0; i < msgs.length - 6; i++) {
       if (msgs[i].role !== 'system') {
         msgs.splice(i, 1);
@@ -264,16 +273,10 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
     }
     totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
   }
-  // --- 直前の会話要約をsystemで追加 ---
+  // --- 直前の会話要約をsystemで追加（重複防止） ---
   if (latestPairs.length > 0) {
     const lastUser = latestPairs[latestPairs.length-2]?.user || '';
     const lastBot = latestPairs[latestPairs.length-1]?.bot || '';
-    // 直前のユーザー発言にURLが含まれていればsystemで明示
-    const urlRegex = /(https?:\/\/[^\s]+)/g;
-    const urlsInLastUser = lastUser.match(urlRegex);
-    if (urlsInLastUser && urlsInLastUser.length > 0) {
-      msgs.push({ role: 'system', content: `【直前の話題URL】この会話では直前まで「${urlsInLastUser.join(', ')}」について話していました。` });
-    }
     if (lastUser || lastBot) {
       msgs.push({ role: 'system', content: `【直前の会話要約】ユーザー:「${lastUser}」→ボッチー:「${lastBot}」` });
     }
