@@ -250,7 +250,6 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
     if (t.bot) msgs.push({ role: 'assistant', content: t.bot });
     // 直後にsystemメッセージを挿入
     if (t.user) {
-      const urlRegex = /(https?:\/\/[^\s]+)/g;
       const urlsInUser = t.user.match(urlRegex);
       if (urlsInUser && urlsInUser.length > 0) {
         msgs.push({ role: 'system', content: `【直前の話題URL】この会話の直前で話題になっていたURLは「${urlsInUser.join(', ')}」です。以降の質問で『さっきのURL』や『前の話題』とあれば必ずこれを参照してください。` });
@@ -574,7 +573,6 @@ export async function runPipeline(action, { message, flags, supabase }) {
     }
     // --- 指示語パターンを徹底拡張（自然な日本語も網羅） ---
     const referPrevUrlPattern = /(さっきのURL|前のURL|先ほどのURL|上記のURL|そのURL|このURL|さっきの.*サイト|前の.*ページ|その.*お店|コーヒーのサイト|さっきのニュース|前のリンク|その話題|その話|前の話題|さっきシェアしたニュース|さっき貼ったリンク|さっき送った記事|さっき送ったニュース|さっきのトピック|上の話題|上のリンク|上のニュース|直前の話題|直前のリンク|直前のニュース|さっきの投稿|さっきの共有|さっきのメッセージ|さっきの内容|さっきのやつ|上記の内容|上記のやつ|この話題|このニュース|このリンク)/i;
-    const urlRegex = /(https?:\/\/[^\s]+)/g;
     let history = [];
     let userProfile = null;
     let globalContext = null;
