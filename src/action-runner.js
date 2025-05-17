@@ -313,6 +313,31 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   } catch (e) {
     console.warn('[buildHistoryContext] 会話全体要約LLM失敗', e);
   }
+  // --- 追加: 直近の会話履歴から「現在の話題」「直前の課題」「技術的文脈」などをLLMで抽出し、systemメッセージとしてhistory冒頭に必ず追加 ---
+  try {
+    const conversationText = allHistory.map(h => `ユーザー: ${h.user || ''}\nボッチー: ${h.bot || ''}`).join('\n');
+    const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const metaPrompt = `以下の会話履歴から「現在の話題」「直前の課題」「技術的文脈や会話の一貫性」を日本語で簡潔に抽出し、JSONで出力してください。\n---\n${conversationText}\n---\n出力例: {\"currentTopic\":\"...\",\"currentIssue\":\"...\",\"contextMeta\":\"...\"}`;
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4.1-nano-2025-04-14',
+      messages: [
+        { role: 'system', content: 'あなたは会話分脈抽出AIです。' },
+        { role: 'user', content: metaPrompt }
+      ],
+      max_tokens: 256,
+      temperature: 0.2
+    });
+    const content = res.choices[0]?.message?.content?.trim() || '';
+    const json = content.match(/\{[\s\S]*\}/)?.[0];
+    if (json) {
+      const obj = JSON.parse(json);
+      if (obj.currentTopic) msgs.unshift({ role: 'system', content: `【現在の話題】${obj.currentTopic}` });
+      if (obj.currentIssue) msgs.unshift({ role: 'system', content: `【直前の課題】${obj.currentIssue}` });
+      if (obj.contextMeta) msgs.unshift({ role: 'system', content: `【技術的文脈】${obj.contextMeta}` });
+    }
+  } catch (e) {
+    console.warn('[buildHistoryContext] 分脈抽出LLM失敗', e);
+  }
   // --- 追加: 直近のユーザー発言から「ユーザーの意図推察」systemメッセージをLLMで生成し、history冒頭に必ず追加 ---
   try {
     const lastUserMsg = allHistory.length > 0 ? allHistory[allHistory.length-1].user : '';
@@ -344,8 +369,8 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   let totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
   while (totalLength > 5000 && msgs.length > 8) {
     for (let i = 0; i < msgs.length; i++) {
-      // 「会話の流れ要約」「未解決の問い」「ユーザーの期待」「感情トーン」「長期記憶要約」「ユーザーの意図推察」systemメッセージは絶対に消さない
-      if (/【(会話の流れ要約|未解決の問い|ユーザーの期待|感情トーン|長期記憶要約|ユーザーの意図推察)】/.test(msgs[i].content)) continue;
+      // 「会話の流れ要約」「未解決の問い」「ユーザーの期待」「感情トーン」「長期記憶要約」「ユーザーの意図推察」「現在の話題」「直前の課題」「技術的文脈」systemメッセージは絶対に消さない
+      if (/【(会話の流れ要約|未解決の問い|ユーザーの期待|感情トーン|長期記憶要約|ユーザーの意図推察|現在の話題|直前の課題|技術的文脈)】/.test(msgs[i].content)) continue;
       if (msgs[i].role !== 'system' && !msgs[i].entities?.urls?.length) {
         msgs.splice(i, 1);
         break;
