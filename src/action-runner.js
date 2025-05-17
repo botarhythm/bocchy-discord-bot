@@ -13,6 +13,7 @@ import { reflectiveCheck } from './utils/reflectiveCheck.js';
 import { logInterventionDecision } from './index.js';
 import axios from 'axios';
 import { updateUserProfileSummaryFromHistory } from './utils/userProfile.js';
+import puppeteer from 'puppeteer';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -263,6 +264,41 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   return msgs;
 }
 
+// 動的レンダリング＋静的抽出の二段槈
+export async function fetchPageContent(url) {
+  // 1. puppeteerで動的レンダリング
+  try {
+    const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+    const page = await browser.newPage();
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    const content = await page.evaluate(() => {
+      const main = document.querySelector('main')?.innerText || '';
+      const article = document.querySelector('article')?.innerText || '';
+      const body = document.body.innerText || '';
+      return main || article || body;
+    });
+    await browser.close();
+    if (content && content.replace(/\s/g, '').length > 50) return content;
+  } catch (e) {
+    // puppeteer失敗時は静的抽出にフォールバック
+  }
+  // 2. fetch+cheerioで静的HTML抽出
+  try {
+    const res = await fetch(url, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; DiscordBot/1.0; +https://github.com/botarhythm/bocchy-discord-bot)' } });
+    const html = await res.text();
+    const $ = load(html);
+    const title = $('title').text();
+    const metaDesc = $('meta[name=description]').attr('content') || '';
+    const mainText = $('main').text() + $('article').text() + $('section').text();
+    const ps = $('p').map((_i, el) => $(el).text()).get().join('\n');
+    let text = [title, metaDesc, mainText, ps].filter(Boolean).join('\n');
+    if (text.replace(/\s/g, '').length < 50) return '';
+    return text.trim();
+  } catch (e) {
+    return '';
+  }
+}
+
 // ---- 1. googleSearch: 信頼性の高いサイトを優先しつつSNS/ブログも含める ----
 async function googleSearch(query, attempt = 0) {
   const apiKey = process.env.GOOGLE_API_KEY;
@@ -363,18 +399,39 @@ function appendDateAndImpactWordsIfNeeded(userPrompt, query) {
 
 // ---- 新: ChatGPT風・自然なWeb検索体験 ----
 async function enhancedSearch(userPrompt, message, affinity, supabase) {
-  // 1) 検索クエリ生成
-  let searchQuery = await llmRespond(userPrompt, queryGenSystemPrompt, message, [], buildCharacterPrompt(message, affinity));
-  searchQuery = appendDateAndImpactWordsIfNeeded(userPrompt, searchQuery);
-  // 2) 検索実行
-  let results = await googleSearch(searchQuery);
-  if (results.length < 2) {
-    const altQuery = searchQuery + ' 事例 とは';
-    results = results.concat(await googleSearch(altQuery));
+  // 1) 検索クエリ生成（多様化: 3パターン）
+  let queries = [];
+  for (let i = 0; i < 3; i++) {
+    let q = await llmRespond(
+      userPrompt,
+      queryGenSystemPrompt + `\n【バリエーション${i+1}】できるだけ異なる切り口で。`,
+      message,
+      [],
+      buildCharacterPrompt(message, affinity)
+    );
+    q = appendDateAndImpactWordsIfNeeded(userPrompt, q);
+    if (q && !queries.includes(q)) queries.push(q);
+  }
+  // 2) 検索実行（重複URL・ドメイン多様性）
+  let allResults = [];
+  let seenLinks = new Set();
+  let seenDomains = new Set();
+  for (const query of queries) {
+    let results = await googleSearch(query);
+    for (const r of results) {
+      const domain = r.link.match(/^https?:\/\/(.*?)(\/|$)/)?.[1] || '';
+      if (!seenLinks.has(r.link) && !seenDomains.has(domain)) {
+        allResults.push(r);
+        seenLinks.add(r.link);
+        seenDomains.add(domain);
+      }
+      if (allResults.length >= MAX_ARTICLES) break;
+    }
+    if (allResults.length >= MAX_ARTICLES) break;
   }
   // 3) ページ取得＆テキスト抽出 or スニペット利用
   let pageContents = await Promise.all(
-    results.map(async r => {
+    allResults.map(async r => {
       try {
         const res = await fetch(r.link, { timeout: 10000 });
         const html = await res.text();
@@ -397,25 +454,31 @@ async function enhancedSearch(userPrompt, message, affinity, supabase) {
     })
   );
   pageContents = pageContents.filter((pg, i) => relChecks[i]);
-  // 5) ChatGPT風の回答テンプレート
+  // 5) Markdown整形・比較/矛盾指摘テンプレート
+  const useMarkdown = bocchyConfig.output_preferences?.format === 'markdown';
   if (pageContents.length === 0 || pageContents.every(pg => !pg.text.trim())) {
     // 検索で見つからなかった場合、LLMで一般知識・推論回答を生成
-    const fallbackPrompt = `Web検索では直接的な情報が見つかりませんでしたが、一般的な知識や推論でお答えします。\n\n質問: ${userPrompt}`;
+    const fallbackPrompt =
+      `Web検索では直接的な情報が見つかりませんでしたが、一般的な知識や推論でお答えします。\n\n質問: ${userPrompt}` +
+      (useMarkdown ? '\n\n【出力形式】Markdownで見やすくまとめてください。' : '');
     const fallbackAnswer = await llmRespond(userPrompt, fallbackPrompt, message, [], buildCharacterPrompt(message, affinity));
     return { answer: fallbackAnswer, results: [] };
   }
+  // 比較・矛盾指摘プロンプト
   const docs = pageContents.map((pg,i) => `【${i+1}】${pg.title}\n${pg.text}\nURL: ${pg.link}`).join('\n\n');
   const urlList = pageContents.map((pg,i) => `【${i+1}】${pg.title}\n${pg.link}`).join('\n');
-  const systemPrompt =
-    `あなたはWeb検索アシスタントです。以下の検索結果を参考に、ユーザーの質問「${userPrompt}」に日本語で分かりやすく回答してください。` +
+  let systemPrompt =
+    `あなたはWeb検索アシスタントです。以下の検索結果を比較し、共通点・矛盾点・重要な違いがあれば明示してください。` +
+    `ユーザーの質問「${userPrompt}」に日本語で分かりやすく回答してください。` +
+    (useMarkdown ? '\n\n【出力形式】\n- 箇条書きや表を活用し、Markdownで見やすくまとめてください。\n- 参考URLは[1]や【1】のように文中で引用してください。' : '') +
     `\n\n【検索結果要約】\n${docs}\n\n【参考URLリスト】\n${urlList}\n\n` +
     `・信頼できる情報源を優先し、事実ベースで簡潔にまとめてください。\n・必要に応じて参考URLを文中で引用してください。`;
   let answer = await llmRespond(userPrompt, systemPrompt, message, [], buildCharacterPrompt(message, affinity));
   // --- 修正: 関連度が2件以上ある場合のみ出典URLを付与 ---
   if (pageContents.length >= 2) {
-    answer += `\n\n【出典URL】\n` + pageContents.map((pg,i) => `【${i+1}】${pg.link}`).join('\n');
+    answer += (useMarkdown ? `\n\n**【出典URL】**\n` : '\n\n【出典URL】\n') + pageContents.map((pg,i) => `【${i+1}】${pg.link}`).join('\n');
   }
-  if (supabase) await saveHistory(supabase, message, `[検索クエリ] ${searchQuery}`, docs, affinity);
+  if (supabase) await saveHistory(supabase, message, `[検索クエリ] ${queries[0]}`, docs, affinity);
   return { answer, results: pageContents };
 }
 // ...（省略: 既存の残りのコードは変更なし）...
