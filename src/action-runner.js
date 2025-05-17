@@ -481,4 +481,14 @@ async function enhancedSearch(userPrompt, message, affinity, supabase) {
   if (supabase) await saveHistory(supabase, message, `[検索クエリ] ${queries[0]}`, docs, affinity);
   return { answer, results: pageContents };
 }
-// ...（省略: 既存の残りのコードは変更なし）...
+
+// ダミー実装: runPipeline, shouldContextuallyIntervene
+export function runPipeline() {
+  throw new Error('runPipelineは未実装です。src/action-runner.jsで実装してください。');
+}
+
+export function shouldContextuallyIntervene() {
+  throw new Error('shouldContextuallyInterveneは未実装です。src/action-runner.jsで実装してください。');
+}
+
+export { enhancedSearch };
