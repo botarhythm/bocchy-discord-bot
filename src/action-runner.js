@@ -579,16 +579,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
     if (supabase) {
       history = await buildHistoryContext(supabase, userId, channelId, guildId, message.guild);
     }
-    // --- URL付き発言の直後にsystemメッセージを必ず挿入 ---
-    const urlsInMsg = message.content.match(urlRegex);
-    if (urlsInMsg && urlsInMsg.length > 0) {
-      // タイトル抽出（例：Yahooニュース等）
-      const titleMatch = message.content.match(/\n(.+?)\n/);
-      const prevTitle = titleMatch ? titleMatch[1] : '';
-      const sysMsg = `【直前の話題URL】${getUserDisplayName(message)}さんが「${urlsInMsg[0]}"${prevTitle ? `（${prevTitle}）` : ''}を紹介しました。以降の質問で『さっきのURL』『前のニュース』『その話題』『さっきシェアしたニュース』『さっき貼ったリンク』『上の話題』などが出た場合は必ずこれを参照してください。`;
-      history.push({ role: 'system', content: sysMsg });
-    }
-    // --- 指示語検知時もsystemメッセージをhistoryの先頭付近に必ず残す ---
+    // --- 指示語検知時もsystemメッセージをhistoryの先頭に必ず残す ---
     if (referPrevUrlPattern.test(message.content)) {
       // 履歴から直近のURL・タイトル・発言者を抽出
       let prevUrl = null;
@@ -610,8 +601,8 @@ export async function runPipeline(action, { message, flags, supabase }) {
       if (prevUrl) {
         let sysMsg = `【直前の話題URL】${prevUser}さんが「${prevUrl}"`;
         if (prevTitle) sysMsg += `（${prevTitle}）`;
-        sysMsg += `を紹介しました。以降の質問で『さっきのURL』『前のニュース』『その話題』『さっきシェアしたニュース』『さっき貼ったリンク』『上の話題』などが出た場合は必ずこれを参照してください。`;
-        // 先頭付近に必ず残す
+        sysMsg += `を紹介しました。以降の質問で『さっきのURL』『前のニュース』『その話題』『さっきシェアしたニュース』『さっき貼ったリンク』『上の話題』『先ほどのURL』『先ほどのリンク』などが出た場合は必ずこれを参照してください。`;
+        // 先頭に必ず残す
         history.unshift({ role: 'system', content: sysMsg });
       }
     }
@@ -632,8 +623,8 @@ export async function runPipeline(action, { message, flags, supabase }) {
     trimmedHistory = trimmedHistory.filter((v,i,a) => a.findIndex(t => t.role === v.role && t.content === v.content) === i);
     // 以降はtrimmedHistoryをhistoryとして利用
     history = trimmedHistory;
-    // --- キャラクタープロンプト/systemメッセージでhistory参照の強制を強調 ---
-    const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext) + '\n【重要】指示語（さっきのURL、前のニュース、上の話題など）が出た場合は、history内の【直前の話題URL】systemメッセージを必ず参照し、話題を取り違えないでください。';
+    // --- キャラクタープロンプト/systemメッセージでhistory参照の強制をさらに強調 ---
+    const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext) + '\n【最重要】指示語（さっきのURL、前のニュース、上の話題、先ほどのURLなど）が出た場合は、history内の【直前の話題URL】systemメッセージを必ず参照し、話題を取り違えないでください。historyのsystemメッセージを最優先で参照してください。';
     const answer = await llmRespond(message.content, '', message, history, charPrompt);
     await message.reply(answer);
     if (supabase) await updateAffinity(supabase, userId, guildId, message.content);
