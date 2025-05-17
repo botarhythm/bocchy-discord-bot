@@ -268,6 +268,12 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   if (latestPairs.length > 0) {
     const lastUser = latestPairs[latestPairs.length-2]?.user || '';
     const lastBot = latestPairs[latestPairs.length-1]?.bot || '';
+    // 直前のユーザー発言にURLが含まれていればsystemで明示
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const urlsInLastUser = lastUser.match(urlRegex);
+    if (urlsInLastUser && urlsInLastUser.length > 0) {
+      msgs.push({ role: 'system', content: `【直前の話題URL】この会話では直前まで「${urlsInLastUser.join(', ')}」について話していました。` });
+    }
     if (lastUser || lastBot) {
       msgs.push({ role: 'system', content: `【直前の会話要約】ユーザー:「${lastUser}」→ボッチー:「${lastBot}」` });
     }
