@@ -2,7 +2,11 @@ FROM node:20
 
 WORKDIR /app
 
-COPY . .
+COPY package.json ./
+COPY pnpm-lock.yaml ./
+COPY src ./src
+COPY tsconfig.json ./
+COPY .env ./
 
 RUN npm install -g pnpm
 RUN pnpm install
