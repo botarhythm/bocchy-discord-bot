@@ -313,6 +313,29 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   } catch (e) {
     console.warn('[buildHistoryContext] 会話全体要約LLM失敗', e);
   }
+  // --- 追加: 直近のユーザー発言から「ユーザーの意図推察」systemメッセージをLLMで生成し、history冒頭に必ず追加 ---
+  try {
+    const lastUserMsg = allHistory.length > 0 ? allHistory[allHistory.length-1].user : '';
+    if (lastUserMsg && lastUserMsg.length > 2) {
+      const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      const intentPrompt = `次のユーザー発言から「ユーザーの意図・本当に知りたいこと・期待している回答」を日本語で簡潔に推察し、1文で要約してください。\n---\n${lastUserMsg}\n---\n出力例: ユーザーは○○について深く知りたがっている／本質的な理由を求めている／比較を期待している 等`;
+      const res = await openai.chat.completions.create({
+        model: 'gpt-4.1-nano-2025-04-14',
+        messages: [
+          { role: 'system', content: 'あなたはユーザー意図推察AIです。' },
+          { role: 'user', content: intentPrompt }
+        ],
+        max_tokens: 128,
+        temperature: 0.2
+      });
+      const intent = res.choices[0]?.message?.content?.trim() || '';
+      if (intent) {
+        msgs.unshift({ role: 'system', content: `【ユーザーの意図推察】${intent}` });
+      }
+    }
+  } catch (e) {
+    console.warn('[buildHistoryContext] ユーザー意図推察LLM失敗', e);
+  }
   // --- 長期記憶（要約・ベクトル検索）も同様にsystemメッセージ化して冒頭に追加 ---
   if (sum?.summary) {
     msgs.unshift({ role: 'system', content: `【長期記憶要約】${sum.summary}` });
@@ -321,8 +344,8 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   let totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
   while (totalLength > 5000 && msgs.length > 8) {
     for (let i = 0; i < msgs.length; i++) {
-      // 「会話の流れ要約」「未解決の問い」「ユーザーの期待」「感情トーン」「長期記憶要約」systemメッセージは絶対に消さない
-      if (/【(会話の流れ要約|未解決の問い|ユーザーの期待|感情トーン|長期記憶要約)】/.test(msgs[i].content)) continue;
+      // 「会話の流れ要約」「未解決の問い」「ユーザーの期待」「感情トーン」「長期記憶要約」「ユーザーの意図推察」systemメッセージは絶対に消さない
+      if (/【(会話の流れ要約|未解決の問い|ユーザーの期待|感情トーン|長期記憶要約|ユーザーの意図推察)】/.test(msgs[i].content)) continue;
       if (msgs[i].role !== 'system' && !msgs[i].entities?.urls?.length) {
         msgs.splice(i, 1);
         break;
@@ -659,7 +682,9 @@ export async function runPipeline(action, { message, flags, supabase }) {
       }
     }
     // --- キャラクタープロンプト/systemメッセージでhistory参照の強制をさらに強調 ---
-    const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext) + '\n【最重要】指示語（さっきのニュース、さっきのURL、前の話題、どうして、なぜ等）が出た場合は、history内の【直前のニュース要約】【直前の話題URL】【直前のニュースタイトル】systemメッセージを必ず参照し、内容を踏まえて回答してください。historyのsystemメッセージを最優先で参照してください。';
+    const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext)
+      + '\n【最重要】指示語（さっきのニュース、さっきのURL、前の話題、どうして、なぜ等）が出た場合は、history内の【直前のニュース要約】【直前の話題URL】【直前のニュースタイトル】systemメッセージを必ず参照し、内容を踏まえて回答してください。historyのsystemメッセージを最優先で参照してください。'
+      + '\n【最重要】history内の【ユーザーの意図推察】systemメッセージを必ず参照し、ユーザーの本当の意図・期待に沿った回答をしてください。';
     const answer = await llmRespond(message.content, '', message, history, charPrompt);
     await message.reply(answer);
     if (supabase) await updateAffinity(supabase, userId, guildId, message.content);
