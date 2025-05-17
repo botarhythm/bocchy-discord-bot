@@ -283,10 +283,11 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   }
   // --- プロンプト長（文字数ベース）で圧縮 ---
   let totalLength = msgs.reduce((sum, m) => sum + (m.content?.length || 0), 0);
-  // 直近3往復＋要約・プロファイル・エンティティ付き発言・重要systemは必ず残す
+  // 直近3往復＋要約・プロファイル・エンティティ付き発言・重要system・直前systemは必ず残す
   while (totalLength > 5000 && msgs.length > 8) {
     for (let i = 0; i < msgs.length - 6; i++) {
-      // エンティティ付き発言・systemメッセージは絶対に消さない
+      // 直前6件・エンティティ付き発言・systemメッセージは絶対に消さない
+      if (i < msgs.length - 6) continue;
       if (msgs[i].role !== 'system' && !msgs[i].entities?.urls?.length) {
         msgs.splice(i, 1);
         break;
@@ -632,35 +633,18 @@ export async function runPipeline(action, { message, flags, supabase }) {
         }
         if (prevUrl && prevSummary && prevTitle) break;
       }
-      // system promptに明示的に挿入
+      // system promptに明示的に挿入（冒頭に必ず）
       let sysMsg = '';
       if (prevUrl) sysMsg += `【直前の話題URL】${prevUser || ''}さんが「${prevUrl}"を紹介しました。`;
       if (prevTitle) sysMsg += `【直前のニュースタイトル】${prevTitle}。`;
       if (prevSummary) sysMsg += `【直前のニュース要約】${prevSummary}`;
       if (sysMsg) {
-        sysMsg += ' 以降の質問で「さっきのニュース」「そのニュース」「さっきのURL」「前の話題」などが出た場合は必ずこれらを参照し、内容を踏まえて回答してください。historyのsystemメッセージを最優先で参照してください。';
+        sysMsg = '【最重要】この会話の直前の内容を必ず参照してください。historyのsystemメッセージ（直前の要約・URL・タイトル）は絶対に無視せず、指示語が出た場合は必ずこれらを根拠に回答してください。\n' + sysMsg;
         history.unshift({ role: 'system', content: sysMsg });
       }
     }
-    // --- ChatGPT本家風: 直近のuser/assistantペア＋重要systemメッセージは必ず残す ---
-    // 圧縮時にsystemメッセージ（直前の話題URL）は絶対に消さない
-    const importantSystemMsgs = history.filter(h => h.role === 'system' && h.content && h.content.includes('直前の話題URL'));
-    // 直近3往復（6件）＋重要systemメッセージ
-    let trimmedHistory = [];
-    let userAssistantPairs = [];
-    for (let i = history.length - 1; i >= 0; i--) {
-      if (history[i].role === 'user' || history[i].role === 'assistant') {
-        userAssistantPairs.unshift(history[i]);
-        if (userAssistantPairs.length >= 6) break;
-      }
-    }
-    trimmedHistory = [...importantSystemMsgs, ...userAssistantPairs];
-    // 重複除去
-    trimmedHistory = trimmedHistory.filter((v,i,a) => a.findIndex(t => t.role === v.role && t.content === v.content) === i);
-    // 以降はtrimmedHistoryをhistoryとして利用
-    history = trimmedHistory;
     // --- キャラクタープロンプト/systemメッセージでhistory参照の強制をさらに強調 ---
-    const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext) + '\n【最重要】指示語（さっきのURL、前のニュース、上の話題、先ほどのURLなど）が出た場合は、history内の【直前の話題URL】systemメッセージを必ず参照し、話題を取り違えないでください。historyのsystemメッセージを最優先で参照してください。';
+    const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext) + '\n【最重要】指示語（さっきのニュース、さっきのURL、前の話題、どうして、なぜ等）が出た場合は、history内の【直前のニュース要約】【直前の話題URL】【直前のニュースタイトル】systemメッセージを必ず参照し、内容を踏まえて回答してください。historyのsystemメッセージを最優先で参照してください。';
     const answer = await llmRespond(message.content, '', message, history, charPrompt);
     await message.reply(answer);
     if (supabase) await updateAffinity(supabase, userId, guildId, message.content);
