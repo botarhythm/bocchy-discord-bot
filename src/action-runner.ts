@@ -16,10 +16,10 @@ import { updateUserProfileSummaryFromHistory } from './utils/userProfile';
 import puppeteer from 'puppeteer';
 import { openai, queuedOpenAI } from './services/openai';
 import { supabase } from './services/supabase';
-import { Message, Guild, Client } from 'discord.js';
+import { Message, Guild, Client, ChatInputCommandInteraction } from 'discord.js';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import LRU from 'lru-cache';
+import { LRUCache } from 'lru-cache';
 
 // --- 型定義 ---
 export interface UserProfile {
@@ -48,8 +48,8 @@ const bocchyConfig = yaml.load(fs.readFileSync('bocchy-character.yaml', 'utf8'))
 const urlRegex = /(https?:\/\/[^\s]+)/g;
 
 // --- LRUキャッシュ（summary/embedding用） ---
-const summaryCache = new LRU<string, any>({ max: 256, ttl: 1000 * 60 * 10 }); // 10分
-const embeddingCache = new LRU<string, any>({ max: 256, ttl: 1000 * 60 * 10 }); // 10分
+const summaryCache = new LRUCache<string, any>({ max: 256, ttl: 1000 * 60 * 10 }); // 10分
+const embeddingCache = new LRUCache<string, any>({ max: 256, ttl: 1000 * 60 * 10 }); // 10分
 
 // --- エンティティ抽出（URL＋人名＋イベント＋スポーツ種別） ---
 function extractEntities(text: string): {
@@ -96,17 +96,19 @@ async function extractEntitiesLLM(text: string): Promise<Record<string, any>> {
 }
 
 // ユーザーの表示名・ニックネームを正しく取得
-function getUserDisplayName(message: Message): string {
-  // サーバー内ならニックネーム→グローバル表示名→ユーザー名の順
-  if (message.guild && message.member) {
+function getUserDisplayName(message: Message | ChatInputCommandInteraction): string {
+  if ('guild' in message && 'member' in message && message.guild && message.member) {
+    // サーバー内ならニックネーム→グローバル表示名→ユーザー名の順
+    // @ts-ignore
     return message.member.displayName || message.member.user.globalName || message.member.user.username;
   }
-  // DMならグローバル表示名→ユーザー名
-  return message.author.globalName || message.author.username;
+  // DMまたはInteractionならグローバル表示名→ユーザー名
+  // @ts-ignore
+  return message.user?.globalName || message.user?.username || message.author?.globalName || message.author?.username;
 }
 
 function buildCharacterPrompt(
-  message: Message,
+  message: Message | ChatInputCommandInteraction,
   affinity: number = 0,
   userProfile: UserProfile | null = null,
   globalContext: GlobalContext | null = null
@@ -825,3 +827,5 @@ async function getGuildMemberNames(guild: Guild, limit: number): Promise<string[
   // TODO: 本実装ではguild.members.fetch()等で取得
   return [];
 }
+
+export { getAffinity, buildCharacterPrompt, updateAffinity, saveHistory };

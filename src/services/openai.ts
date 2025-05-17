@@ -16,7 +16,7 @@ export async function queuedOpenAI<T>(fn: () => Promise<T>): Promise<T> {
   let delay = 1000;
   while (true) {
     try {
-      return await openaiQueue.add(fn);
+      return (await openaiQueue.add(fn)) as T;
     } catch (err: any) {
       const code = err?.status || err?.code || err?.response?.status;
       if ((code === 429 || code === 502) && attempt < maxAttempts) {
