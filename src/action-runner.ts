@@ -5,26 +5,54 @@ import { load } from 'cheerio';
 import { OpenAI } from 'openai';
 import yaml from 'js-yaml';
 import fs from 'fs';
-import { resolveGuildId } from './utils/resolveGuildId.js';
-import { getAffinity, updateAffinity } from './utils/affinity.js';
-import { getSentiment } from './utils/sentimentAnalyzer.js';
-import { analyzeGlobalContext } from './utils/analyzeGlobalContext.js';
-import { reflectiveCheck } from './utils/reflectiveCheck.js';
-import { logInterventionDecision } from './index.js';
+import { resolveGuildId } from './utils/resolveGuildId';
+import { getAffinity, updateAffinity } from './utils/affinity';
+import { getSentiment } from './utils/sentimentAnalyzer';
+import { analyzeGlobalContext } from './utils/analyzeGlobalContext';
+import { reflectiveCheck } from './utils/reflectiveCheck';
+import { logInterventionDecision } from './index';
 import axios from 'axios';
-import { updateUserProfileSummaryFromHistory } from './utils/userProfile.js';
+import { updateUserProfileSummaryFromHistory } from './utils/userProfile';
 import puppeteer from 'puppeteer';
+import { openai } from './services/openai';
+import { supabase } from './services/supabase';
+import { Message, Guild, Client } from 'discord.js';
+import { SupabaseClient } from '@supabase/supabase-js';
+import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// --- 型定義 ---
+export interface UserProfile {
+  preferences?: Record<string, any>;
+  profile_summary?: string;
+  [key: string]: any;
+}
+
+export interface GlobalContext {
+  tone?: string;
+  topics?: string[];
+  summary?: string;
+  [key: string]: any;
+}
+
+export interface ConversationHistory {
+  user?: string;
+  bot?: string;
+  [key: string]: any;
+}
 
 // Bocchyキャラクター設定をYAMLから読み込む
-const bocchyConfig = yaml.load(fs.readFileSync('bocchy-character.yaml', 'utf8'));
+const bocchyConfig = yaml.load(fs.readFileSync('bocchy-character.yaml', 'utf8')) as any;
 
 // --- URL抽出用: グローバルで1回だけ宣言 ---
 const urlRegex = /(https?:\/\/[^\s]+)/g;
 
 // --- エンティティ抽出（URL＋人名＋イベント＋スポーツ種別） ---
-function extractEntities(text) {
+function extractEntities(text: string): {
+  urls: string[];
+  persons: string[];
+  events: string[];
+  sports: string[];
+} {
   const urls = text ? (text.match(urlRegex) || []) : [];
   // 人名抽出（簡易: 大谷翔平など漢字＋カタカナ/ひらがな/英字）
   const personRegex = /([\p{Script=Han}]{2,}(?:[\p{Script=Hiragana}\p{Script=Katakana}A-Za-z]{1,})?)/gu;
@@ -39,7 +67,7 @@ function extractEntities(text) {
 }
 
 // --- LLMによるエンティティ抽出 ---
-async function extractEntitiesLLM(text) {
+async function extractEntitiesLLM(text: string): Promise<Record<string, any>> {
   if (!text || text.length < 2) return {};
   const prompt = `次のテキストから「人名」「組織名」「政策名」「イベント名」「話題」「URL」など重要なエンティティをJSON形式で抽出してください。\nテキスト: ${text}\n出力例: {"persons": ["大谷翔平"], "organizations": ["ムーディーズ"], "policies": ["財政赤字"], "events": ["米国債格下げ"], "topics": ["米国経済"], "urls": ["https://..."]}`;
   try {
@@ -63,7 +91,7 @@ async function extractEntitiesLLM(text) {
 }
 
 // ユーザーの表示名・ニックネームを正しく取得
-function getUserDisplayName(message) {
+function getUserDisplayName(message: Message): string {
   // サーバー内ならニックネーム→グローバル表示名→ユーザー名の順
   if (message.guild && message.member) {
     return message.member.displayName || message.member.user.globalName || message.member.user.username;
@@ -72,7 +100,12 @@ function getUserDisplayName(message) {
   return message.author.globalName || message.author.username;
 }
 
-function buildCharacterPrompt(message, affinity = 0, userProfile = null, globalContext = null) {
+function buildCharacterPrompt(
+  message: Message,
+  affinity: number = 0,
+  userProfile: UserProfile | null = null,
+  globalContext: GlobalContext | null = null
+): string {
   let prompt = `${bocchyConfig.description}\n`;
   prompt += `【性格】${bocchyConfig.personality.tone}\n`;
   prompt += `【感情表現】${bocchyConfig.personality.emotion_expression}\n`;
@@ -123,7 +156,13 @@ const SHORT_TURNS   = 8;   // ← 直近 8 往復だけ詳細（元は4）
 const MAX_ARTICLES  = 3;
 
 // ---------- A.  summary を取ってシステムに渡すヘルパ ----------
-export async function buildHistoryContext(supabase, userId, channelId, guildId = null, guild = null) {
+export async function buildHistoryContext(
+  supabase: SupabaseClient,
+  userId: string,
+  channelId: string,
+  guildId: string | null = null,
+  guild: Guild | null = null
+): Promise<any[]> {
   if (!supabase) return [];
   // 1) 直近詳細 n＝SHORT_TURNS（チャンネル単位）
   const { data: hist } = await supabase
@@ -184,7 +223,7 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   } catch (e) { userProfile = null; }
 
   // 5) ベクトル類似検索でパーソナライズ履歴取得（最大2件）
-  let personalizedHistory = [];
+  let personalizedHistory: { user: string; bot: string }[] = [];
   try {
     const lastUserMsg = recent.length > 0 ? recent[recent.length-1].user : '';
     let embedding = null;
@@ -203,7 +242,7 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
         p_match_threshold: 0.75,
         p_match_count: 2
       });
-      personalizedHistory = (simRows || []).map(r => ({ user: r.message, bot: r.bot_reply }));
+      personalizedHistory = (simRows || []).map((r: any) => ({ user: r.message, bot: r.bot_reply }));
     }
   } catch (e) { personalizedHistory = []; }
 
@@ -231,8 +270,8 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
   // 8) ユーザー相関関係サマリーの生成（要約のみ）
   let correlationSummary = '';
   try {
-    const userPairCounts = {};
-    const topicCounts = {};
+    const userPairCounts: Record<string, number> = {};
+    const topicCounts: Record<string, number> = {};
     for (let i = 0; i < guildAllMessages.length - 1; i++) {
       const m1 = guildAllMessages[i];
       const m2 = guildAllMessages[i+1];
@@ -246,14 +285,14 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
       }
     }
     const topPairs = Object.entries(userPairCounts)
-      .sort((a,b) => b[1]-a[1])
+      .sort((a: [string, number], b: [string, number]) => b[1]-a[1])
       .slice(0,2)
-      .map(([pair, count]) => `・${pair}（${count}回）`)
+      .map(([pair, count]: [string, number]) => `・${pair}（${count}回）`)
       .join('\n');
     const topTopics = Object.entries(topicCounts)
-      .sort((a,b) => b[1]-a[1])
+      .sort((a: [string, number], b: [string, number]) => b[1]-a[1])
       .slice(0,2)
-      .map(([topic, count]) => `#${topic}（${count}回）`)
+      .map(([topic, count]: [string, number]) => `#${topic}（${count}回）`)
       .join(' ');
     correlationSummary = `【サーバー内ユーザー相関サマリー】\n${topPairs}\n【共通話題】${topTopics}`;
   } catch (e) { correlationSummary = ''; }
@@ -311,7 +350,9 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
       if (obj.tone) msgs.unshift({ role: 'system', content: `【感情トーン】${obj.tone}` });
     }
   } catch (e) {
-    console.warn('[buildHistoryContext] 会話全体要約LLM失敗', e);
+    let msg = '[buildHistoryContext] 会話全体要約LLM失敗';
+    if (typeof e === 'object' && e && 'message' in e) msg += `: ${(e as any).message}`;
+    console.warn(msg, e);
   }
   // --- 追加: 直近の会話履歴から「現在の話題」「直前の課題」「技術的文脈」などをLLMで抽出し、systemメッセージとしてhistory冒頭に必ず追加 ---
   try {
@@ -336,7 +377,9 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
       if (obj.contextMeta) msgs.unshift({ role: 'system', content: `【技術的文脈】${obj.contextMeta}` });
     }
   } catch (e) {
-    console.warn('[buildHistoryContext] 分脈抽出LLM失敗', e);
+    let msg = '[buildHistoryContext] 分脈抽出LLM失敗';
+    if (typeof e === 'object' && e && 'message' in e) msg += `: ${(e as any).message}`;
+    console.warn(msg, e);
   }
   // --- 追加: 直近のユーザー発言から「多角的推論（考えられる複数の意図・期待・関心）」systemメッセージをLLMで生成し、history冒頭に必ず追加 ---
   try {
@@ -363,7 +406,9 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
       }
     }
   } catch (e) {
-    console.warn('[buildHistoryContext] 多角的推論LLM失敗', e);
+    let msg = '[buildHistoryContext] 多角的推論LLM失敗';
+    if (typeof e === 'object' && e && 'message' in e) msg += `: ${(e as any).message}`;
+    console.warn(msg, e);
   }
   // --- 長期記憶（要約・ベクトル検索）も同様にsystemメッセージ化して冒頭に追加 ---
   if (sum?.summary) {
@@ -375,7 +420,7 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
     for (let i = 0; i < msgs.length; i++) {
       // 「会話の流れ要約」「未解決の問い」「ユーザーの期待」「感情トーン」「長期記憶要約」「ユーザーの意図推察」「現在の話題」「直前の課題」「技術的文脈」「多角的推論」systemメッセージは絶対に消さない
       if (/【(会話の流れ要約|未解決の問い|ユーザーの期待|感情トーン|長期記憶要約|ユーザーの意図推察|現在の話題|直前の課題|技術的文脈|多角的推論)】/.test(msgs[i].content)) continue;
-      if (msgs[i].role !== 'system' && !msgs[i].entities?.urls?.length) {
+      if (msgs[i].role !== 'system' && !(msgs[i] as any).entities?.urls?.length) {
         msgs.splice(i, 1);
         break;
       }
@@ -386,7 +431,7 @@ export async function buildHistoryContext(supabase, userId, channelId, guildId =
 }
 
 // --- ChatGPT風: Webページクロール＆自然言語要約 ---
-export async function fetchPageContent(url) {
+export async function fetchPageContent(url: string): Promise<string> {
   let content = '';
   let errorMsg = '';
   // 1. puppeteerで動的レンダリング
@@ -403,7 +448,9 @@ export async function fetchPageContent(url) {
     await browser.close();
     if (content && content.replace(/\s/g, '').length > 50) return content;
   } catch (e) {
-    errorMsg += `[puppeteer失敗: ${e.message}]\n`;
+    let errorMsg = '[puppeteer失敗]';
+    if (typeof e === 'object' && e && 'message' in e) errorMsg += `: ${(e as any).message}`;
+    errorMsg += '\n';
   }
   // 2. fetch+cheerioで静的HTML抽出
   try {
@@ -421,13 +468,14 @@ export async function fetchPageContent(url) {
     }
     return text.trim();
   } catch (e) {
-    errorMsg += `[fetch/cheerio失敗: ${e.message}]`;
+    let errorMsg = '[fetch/cheerio失敗]';
+    if (typeof e === 'object' && e && 'message' in e) errorMsg += `: ${(e as any).message}`;
     return errorMsg || '';
   }
 }
 
 // --- ChatGPT風: Webページ内容をLLMで自然言語要約 ---
-export async function summarizeWebPage(rawText, userPrompt = '', message = null, charPrompt = null) {
+export async function summarizeWebPage(rawText: string, userPrompt: string = '', message: Message | null = null, charPrompt: string | null = null): Promise<string> {
   if (!rawText || rawText.length < 30) {
     return 'ページ内容が取得できませんでした。URLが無効か、クロールが制限されている可能性があります。';
   }
@@ -439,7 +487,7 @@ export async function summarizeWebPage(rawText, userPrompt = '', message = null,
 }
 
 // ---- 1. googleSearch: 信頼性の高いサイトを優先しつつSNS/ブログも含める ----
-async function googleSearch(query, attempt = 0) {
+async function googleSearch(query: string, attempt: number = 0): Promise<any[]> {
   const apiKey = process.env.GOOGLE_API_KEY;
   const cseId = process.env.GOOGLE_CSE_ID;
   if (!apiKey || !cseId) {
@@ -468,9 +516,9 @@ async function googleSearch(query, attempt = 0) {
   ];
   // SNS/ブログも候補に含める
   const filtered = data.items
-    .filter(i => /^https?:\/\//.test(i.link))
-    .filter(i => !EXCLUDE_DOMAINS.some(domain => i.link.includes(domain)))
-    .sort((a, b) => {
+    .filter((i: any) => /^https?:\/\//.test(i.link))
+    .filter((i: any) => !EXCLUDE_DOMAINS.some(domain => i.link.includes(domain)))
+    .sort((a: any, b: any) => {
       const aPriority = PRIORITY_DOMAINS.some(domain => a.link.includes(domain)) ? 2 :
                         /twitter|x\.com|facebook|instagram|threads|note|blog|tiktok|line|pinterest|linkedin|youtube|discord/.test(a.link) ? 1 : 0;
       const bPriority = PRIORITY_DOMAINS.some(domain => b.link.includes(domain)) ? 2 :
@@ -478,13 +526,13 @@ async function googleSearch(query, attempt = 0) {
       return bPriority - aPriority;
     })
     .slice(0, MAX_ARTICLES)
-    .map(i => ({ title: i.title, link: i.link, snippet: i.snippet }));
+    .map((i: any) => ({ title: i.title, link: i.link, snippet: i.snippet }));
   return filtered;
 }
 
-async function llmRespond(prompt, systemPrompt = "", message = null, history = [], charPrompt = null) {
+async function llmRespond(prompt: string, systemPrompt: string = "", message: Message | null = null, history: any[] = [], charPrompt: string | null = null): Promise<string> {
   const systemCharPrompt = charPrompt ?? (message ? buildCharacterPrompt(message) : "");
-  const messages = [
+  const messages: ChatCompletionMessageParam[] = [
     { role: "system", content: systemCharPrompt + (systemPrompt ? `\n${systemPrompt}` : "") },
     ...history
   ];
@@ -504,7 +552,7 @@ const LONG_WINDOW  = 50;       // 🧠 森の奥にそっとしまっておく�
 const SUMMARY_AT   = 40;       // ✨ たくさん話したら、まとめて森の記憶にするよ
 
 // 🍃 機能説明リクエストかどうか判定する関数
-function isFeatureQuestion(text) {
+function isFeatureQuestion(text: string): boolean {
   const patterns = [
     /どんなことができる/, /何ができる/, /機能(を|について)?教えて/, /自己紹介/, /できること/, /使い方/, /help/i
   ];
@@ -512,7 +560,7 @@ function isFeatureQuestion(text) {
 }
 
 // 🍃 検索クエリに日付や話題性ワードを自動付与する関数
-function appendDateAndImpactWordsIfNeeded(userPrompt, query) {
+function appendDateAndImpactWordsIfNeeded(userPrompt: string, query: string): string {
   const dateWords = [/今日/, /本日/, /最新/];
   const impactWords = [/ニュース/, /話題/, /注目/, /トレンド/, /速報/];
   let newQuery = query;
@@ -537,9 +585,9 @@ function appendDateAndImpactWordsIfNeeded(userPrompt, query) {
 }
 
 // ---- 新: ChatGPT風・自然なWeb検索体験 ----
-async function enhancedSearch(userPrompt, message, affinity, supabase) {
+async function enhancedSearch(userPrompt: string, message: Message, affinity: number, supabase: SupabaseClient): Promise<{ answer: string, results: any[] }> {
   // 1) 検索クエリ生成（多様化: 3パターン）
-  let queries = [];
+  let queries: string[] = [];
   for (let i = 0; i < 3; i++) {
     let q = await llmRespond(
       userPrompt,
@@ -584,7 +632,7 @@ async function enhancedSearch(userPrompt, message, affinity, supabase) {
     })
   );
   // 4) LLMで関連度判定し、低いものは除外
-  const relPrompt = (query, title, snippet) =>
+  const relPrompt = (query: string, title: string, snippet: string) =>
     `ユーザーの質問:「${query}」\n検索結果タイトル:「${title}」\nスニペット:「${snippet}」\nこの検索結果は質問に直接関係していますか？関係が深い場合は「はい」、そうでなければ「いいえ」とだけ返答してください。`;
   const relChecks = await Promise.all(
     pageContents.map(async pg => {
@@ -622,33 +670,35 @@ async function enhancedSearch(userPrompt, message, affinity, supabase) {
 }
 
 // --- saveHistory: 履歴保存の簡易実装 ---
-async function saveHistory(supabase, message, userMsg, botMsg, affinity) {
+async function saveHistory(supabase: SupabaseClient, message: Message, userMsg: string, botMsg: string, affinity: number): Promise<void> {
   if (!supabase) return;
   try {
     const userId = message.author.id;
     const channelId = message.channel?.id;
-    const guildId = message.guild?.id || null;
+    const guildId = message.guild?.id || '';
     // conversation_historiesに追記
-    await supabase.from('conversation_histories').upsert({
-      user_id: userId,
-      channel_id: channelId,
-      guild_id: guildId,
-      messages: [{ user: userMsg, bot: botMsg, affinity, timestamp: new Date().toISOString() }],
-      updated_at: new Date().toISOString()
-    }, { onConflict: ['user_id', 'channel_id', 'guild_id'] });
+    await supabase.from('conversation_histories').upsert([
+      {
+        user_id: userId,
+        channel_id: channelId,
+        guild_id: guildId,
+        messages: [{ user: userMsg, bot: botMsg, affinity, timestamp: new Date().toISOString() }],
+        updated_at: new Date().toISOString()
+      }
+    ], { onConflict: ['user_id', 'channel_id', 'guild_id'].join(',') });
   } catch (e) {
     console.warn('[saveHistory] 履歴保存エラー:', e);
   }
 }
 
 // --- runPipeline本実装 ---
-export async function runPipeline(action, { message, flags, supabase }) {
+export async function runPipeline(action: string, { message, flags, supabase }: { message: Message, flags: any, supabase: SupabaseClient }): Promise<void> {
   try {
     const userId = message.author.id;
     const channelId = message.channel?.id;
-    const guildId = message.guild?.id || null;
+    const guildId = message.guild?.id || '';
     // 親密度取得
-    const affinity = supabase ? await getAffinity(supabase, userId, guildId) : 0;
+    const affinity = supabase ? await getAffinity(userId, guildId) : 0;
     // --- URLが含まれる場合は必ずクロール＆要約 ---
     const urls = message.content.match(urlRegex);
     console.log('[デバッグ] runPipeline: message.content =', message.content);
@@ -666,8 +716,10 @@ export async function runPipeline(action, { message, flags, supabase }) {
           await message.reply(`【${url}の要約】\n${summary}`);
           console.log(`[Webクロール要約完了] ${url}`);
         } catch (e) {
-          console.error(`[Webクロール失敗] ${url}`, e);
-          await message.reply(`URLクロール・要約に失敗しました: ${e.message || e}`);
+          let errMsg = 'URLクロール・要約に失敗しました:';
+          if (typeof e === 'object' && e && 'message' in e) errMsg += ` ${(e as any).message}`;
+          else errMsg += ` ${e}`;
+          await message.reply(errMsg);
         }
       }
       return;
@@ -718,7 +770,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
       + '\n【人間らしさ】historyの多角的推論を活かし、複数の切り口や余白を持った人間らしい返答を生成してください。';
     const answer = await llmRespond(message.content, '', message, history, charPrompt);
     await message.reply(answer);
-    if (supabase) await updateAffinity(supabase, userId, guildId, message.content);
+    if (supabase) await updateAffinity(userId, guildId, message.content);
     if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
   } catch (err) {
     console.error('[runPipelineエラー]', err);
@@ -726,7 +778,7 @@ export async function runPipeline(action, { message, flags, supabase }) {
   }
 }
 
-export async function shouldContextuallyIntervene(history = [], globalContext = null) {
+export async function shouldContextuallyIntervene(history: any[], globalContext: GlobalContext | null = null): Promise<{ intervene: boolean, reason: string }> {
   // history: [{role, content, ...}] の配列（直近10件程度）
   // globalContext: {topics, tone, summary} など
   const formatted = history.slice(-10).map(h => `${h.role}: ${h.content}`).join('\n');
@@ -758,3 +810,8 @@ export async function shouldContextuallyIntervene(history = [], globalContext = 
 }
 
 export { enhancedSearch };
+
+async function getGuildMemberNames(guild: Guild, limit: number): Promise<string[]> {
+  // TODO: 本実装ではguild.members.fetch()等で取得
+  return [];
+}

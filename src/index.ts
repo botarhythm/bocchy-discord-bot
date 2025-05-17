@@ -1,19 +1,19 @@
-import { Client, GatewayIntentBits, Partials, ChannelType } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ChannelType, Message, Guild, PartialMessage, TextChannel } from "discord.js";
 import dotenv from "dotenv";
-import { OpenAI } from "openai";
+import { openai } from './services/openai';
+import { supabase } from './services/supabase';
 import { detectFlags } from "./flag-detector.js";
 import { pickAction } from "./decision-engine.js";
-import { runPipeline, shouldContextuallyIntervene, buildHistoryContext } from "./action-runner.js";
-import { initSupabase } from './services/supabaseClient.js';
+import { runPipeline, shouldContextuallyIntervene, buildHistoryContext } from "./action-runner";
 import http from 'http';
-import { BOT_CHAT_CHANNEL, MAX_ACTIVE_TURNS, MAX_BOT_CONVO_TURNS, MAX_DAILY_RESPONSES, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END, EMERGENCY_STOP } from '../config/index.js';
+import { BOT_CHAT_CHANNEL, MAX_ACTIVE_TURNS, MAX_BOT_CONVO_TURNS, MAX_DAILY_RESPONSES, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END, EMERGENCY_STOP } from '../config/index';
 
 dotenv.config();
 
 process.on('unhandledRejection', (reason, p) => {
   console.error('[UNHANDLED REJECTION]', reason);
-  if (reason && reason.stack) {
-    console.error('[STACK TRACE]', reason.stack);
+  if (reason && typeof reason === 'object' && 'stack' in reason) {
+    console.error('[STACK TRACE]', (reason as any).stack);
   }
   // 追加: 環境情報・起動引数・バージョン
   console.error('[DEBUG:ENV]', {
@@ -57,8 +57,6 @@ if (EMERGENCY_STOP) {
   process.exit(0);
 }
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -71,26 +69,38 @@ const client = new Client({
 });
 
 client.once("ready", () => {
-  console.log(`✅ Bocchy bot started as ${client.user.tag}`);
+  if (client.user) {
+    console.log(`✅ Bocchy bot started as ${client.user.tag}`);
+  } else {
+    console.log('✅ Bocchy bot started (user unknown)');
+  }
 });
 
+// --- 型定義 ---
+interface BotSettings {
+  INTERVENTION_LEVEL: number;
+  INTERVENTION_QUERIES: string[];
+}
+
+interface InterventionContext {
+  aiInterventionResult?: { intervene: boolean };
+  [key: string]: any;
+}
+
 // 設定の初期化
-let settings = {
-  INTERVENTION_LEVEL: parseInt(process.env.INTERVENTION_LEVEL) || 4,
+let settings: BotSettings = {
+  INTERVENTION_LEVEL: parseInt(process.env.INTERVENTION_LEVEL || '4'),
   INTERVENTION_QUERIES: process.env.INTERVENTION_QUERIES
     ? process.env.INTERVENTION_QUERIES.split(',').map(q => q.trim())
     : ["ニュース", "最新", "困った", "教えて"]
 };
 
-// Supabaseクライアントを初期化するよ（settingsを渡すことで設定購読が動作するよ）
-let supabase = initSupabase(settings);
-
-function isInterventionQuery(message) {
+function isInterventionQuery(message: Message): boolean {
   return settings.INTERVENTION_QUERIES.some(q => message.content.includes(q));
 }
 
 // 介入判定の統合関数（トリガーと文脈フォローを分離）
-function shouldInterveneUnified(message, context = {}) {
+function shouldInterveneUnified(message: Message, context: InterventionContext = {}): boolean {
   // 1. 明示的トリガー
   if (isExplicitMention(message) || isInterventionQuery(message)) {
     logInterventionDecision('explicit_mention_or_query', message);
@@ -111,22 +121,22 @@ function shouldInterveneUnified(message, context = {}) {
   return result;
 }
 
-function logInterventionDecision(reason, message) {
+function logInterventionDecision(reason: string, message: Message): void {
   console.log(`[介入判定] reason=${reason}, user=${message.author?.username}, content=${message.content}`);
 }
 export { logInterventionDecision };
 
-function logMetric(metricName, value) {
+function logMetric(metricName: string, value: any): void {
   console.log(`[メトリクス] ${metricName}: ${value}`);
 }
 
 // JST現在時刻取得ヘルパー
-function getNowJST() {
+function getNowJST(): Date {
   return new Date(new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }));
 }
 
 // 時間帯ごとの日本語挨拶
-function greetingJp(date) {
+function greetingJp(date: Date): string {
   const h = date.getHours();
   if (h < 4) return 'こんばんは';
   if (h < 11) return 'おはようございます';
@@ -134,9 +144,9 @@ function greetingJp(date) {
   return 'こんばんは';
 }
 
-function isExplicitMention(message) {
+function isExplicitMention(message: Message): boolean {
   // メンションまたは「ボッチー」という名前が含まれる場合
-  if (message.mentions.has(client.user)) return true;
+  if (client.user && message.mentions.has(client.user)) return true;
   if (message.content && message.content.includes("ボッチー")) return true;
   return false;
 }
@@ -155,7 +165,7 @@ const activeConversationMap = new Map(); // channelId => { turns: number, lastUs
 
 // --- ボットごとの会話管理 ---
 let botConvoState = new Map(); // botId => { turns, dailyCount, lastResetDate }
-let botSilenceUntil = null; // Date|null: 応答停止終了時刻
+let botSilenceUntil: number | null = null; // Date|null: 応答停止終了時刻
 
 /** 日本時間の今日の日付文字列(YYYY/MM/DD)を返す */
 function getTodayDate() {
@@ -170,8 +180,7 @@ client.on("messageCreate", async (message) => {
 
   // --- DMは常に通常応答 ---
   if (!message.guild) {
-    // ★自分自身の発言は無視
-    if (message.author.id === client.user.id) return;
+    if (client.user && message.author.id === client.user.id) return;
     const flags = detectFlags(message, client);
     const action = pickAction(flags);
     try {
@@ -184,7 +193,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // --- 応答停止中の解除判定（メンション時） ---
-  if (botSilenceUntil && message.mentions.has(client.user)) {
+  if (botSilenceUntil && client.user && message.mentions.has(client.user)) {
     if (Date.now() < botSilenceUntil) {
       botSilenceUntil = null;
       await message.reply('森から帰ってきたよ🌲✨');
@@ -217,7 +226,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // --- ボット同士会話制御（BOT_CHAT_CHANNEL限定） ---
-  if (isBot && channelId === BOT_CHAT_CHANNEL && botId !== client.user.id) {
+  if (isBot && channelId === BOT_CHAT_CHANNEL && client.user && botId !== client.user.id) {
     const hour = getNowJST().getHours();
     if (hour < RESPONSE_WINDOW_START || hour >= RESPONSE_WINDOW_END) {
       console.log(`[b2b制限] 時間外: hour=${hour}`);
@@ -255,30 +264,30 @@ client.on("messageCreate", async (message) => {
   return;
 });
 
-async function getExcitementScoreByAI(history) {
+async function getExcitementScoreByAI(history: Message[]): Promise<number> {
   const prompt = `\n以下はDiscordチャンネルの直近の会話履歴です。\nこの会話が「どれくらい盛り上がっているか」を1〜10のスコアで評価してください。\n10: 非常に盛り上がっている（多人数・活発・感情的・話題性あり）\n1: ほぼ盛り上がっていない（静か・単調・反応が薄い）\nスコアのみを半角数字で返してください。\n---\n${history.slice(-20).map(m => m.author.username + ": " + m.content).join("\n")}\n---\n`;
   const res = await openai.chat.completions.create({
     model: "gpt-4.1-nano-2025-04-14",
     messages: [{ role: "system", content: prompt }]
   });
-  const score = parseInt(res.choices[0].message.content.match(/\d+/)?.[0] || "1", 10);
+  const score = parseInt(res.choices[0]?.message?.content?.match(/\d+/)?.[0] || "1", 10);
   return Math.max(1, Math.min(10, score));
 }
 
-function getCooldownMsByAI(score) {
+function getCooldownMsByAI(score: number): number {
   if (score >= 9) return 20 * 1000;
   if (score >= 7) return 60 * 1000;
   if (score >= 5) return 2 * 60 * 1000;
   return 5 * 60 * 1000;
 }
 
-async function generateInterventionMessage(history) {
+async function generateInterventionMessage(history: Message[]): Promise<string> {
   const prompt = `\n以下の会話の流れを踏まえ、ボットが自然に会話へ参加する一言を日本語で生成してください。\n---\n${history.slice(-10).map(m => m.author.username + ": " + m.content).join("\n")}\n---\n`;
   const res = await openai.chat.completions.create({
     model: "gpt-4.1-nano-2025-04-14",
     messages: [{ role: "system", content: prompt }]
   });
-  return res.choices[0].message.content.trim();
+  return res.choices[0]?.message?.content?.trim() || '';
 }
 
 client.login(process.env.DISCORD_TOKEN);
