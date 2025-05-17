@@ -20,6 +20,9 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // Bocchyキャラクター設定をYAMLから読み込む
 const bocchyConfig = yaml.load(fs.readFileSync('bocchy-character.yaml', 'utf8'));
 
+// --- URL抽出用: グローバルで1回だけ宣言 ---
+const urlRegex = /(https?:\/\/[^\s]+)/g;
+
 // ユーザーの表示名・ニックネームを正しく取得
 function getUserDisplayName(message) {
   // サーバー内ならニックネーム→グローバル表示名→ユーザー名の順
@@ -548,7 +551,6 @@ export async function runPipeline(action, { message, flags, supabase }) {
     // 親密度取得
     const affinity = supabase ? await getAffinity(supabase, userId, guildId) : 0;
     // --- URLが含まれる場合は必ずクロール＆要約 ---
-    const urlRegex = /(https?:\/\/[^\s]+)/g;
     const urls = message.content.match(urlRegex);
     console.log('[デバッグ] runPipeline: message.content =', message.content);
     console.log('[デバッグ] runPipeline: 検出URL =', urls);
