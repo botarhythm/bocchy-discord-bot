@@ -1,17 +1,19 @@
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 import dotenv from "dotenv";
-import { detectFlags } from "./flag-detector.js";
-import { pickAction } from "./decision-engine.js";
-import bocchyPipeline from './core/pipeline.js';
-import { initSupabase } from './services/supabaseClient.js';
+import { openai } from './services/openai';
+import { supabase } from './services/supabase';
+import { detectFlags } from "./flag-detector";
+import { pickAction } from "./decision-engine";
+import { runPipeline, buildHistoryContext, getAffinity, buildCharacterPrompt, updateAffinity, saveHistory } from "./action-runner";
 import http from 'http';
-import { BOT_CHAT_CHANNEL, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END, EMERGENCY_STOP } from './config/index.js';
+import { BOT_CHAT_CHANNEL, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END, EMERGENCY_STOP } from './config/index';
 dotenv.config();
-process.on('unhandledRejection', (reason) => {
+process.on('unhandledRejection', (reason, p) => {
     console.error('[UNHANDLED REJECTION]', reason);
-    if (reason && reason.stack) {
+    if (reason && typeof reason === 'object' && 'stack' in reason) {
         console.error('[STACK TRACE]', reason.stack);
     }
+    // 追加: 環境情報・起動引数・バージョン
     console.error('[DEBUG:ENV]', {
         NODE_ENV: process.env.NODE_ENV,
         BOT_ENABLED: process.env.BOT_ENABLED,
@@ -29,6 +31,7 @@ process.on('uncaughtException', (err) => {
     if (err && err.stack) {
         console.error('[STACK TRACE]', err.stack);
     }
+    // 追加: 環境情報・起動引数・バージョン
     console.error('[DEBUG:ENV]', {
         NODE_ENV: process.env.NODE_ENV,
         BOT_ENABLED: process.env.BOT_ENABLED,
@@ -60,20 +63,90 @@ const client = new Client({
     partials: [Partials.Channel]
 });
 client.once("ready", () => {
-    console.log(`✅ Bocchy bot started as ${client.user?.tag}`);
+    if (client.user) {
+        console.log(`✅ Bocchy bot started as ${client.user.tag}`);
+    }
+    else {
+        console.log('✅ Bocchy bot started (user unknown)');
+    }
 });
+// 設定の初期化
 let settings = {
     INTERVENTION_LEVEL: parseInt(process.env.INTERVENTION_LEVEL || '4'),
     INTERVENTION_QUERIES: process.env.INTERVENTION_QUERIES
         ? process.env.INTERVENTION_QUERIES.split(',').map(q => q.trim())
         : ["ニュース", "最新", "困った", "教えて"]
 };
-let supabase = initSupabase(settings);
+function isInterventionQuery(message) {
+    return settings.INTERVENTION_QUERIES.some(q => message.content.includes(q));
+}
+// 介入判定の統合関数（トリガーと文脈フォローを分離）
+function shouldInterveneUnified(message, context = {}) {
+    // 1. 明示的トリガー
+    if (isExplicitMention(message) || isInterventionQuery(message)) {
+        logInterventionDecision('explicit_mention_or_query', message);
+        // トリガー時のみ介入度で判定
+        return Math.random() < settings.INTERVENTION_LEVEL / 10;
+    }
+    // 2. 文脈フォロー（AI判定・長期記憶活用）
+    if (context.aiInterventionResult && context.aiInterventionResult.intervene) {
+        // 文脈フォロー時はAI・履歴・長期記憶を最大限活用し、確率でカットしない
+        logInterventionDecision('ai_contextual_follow', message);
+        return true;
+    }
+    // 3. 通常の介入度判定
+    if (settings.INTERVENTION_LEVEL <= 0)
+        return false;
+    if (settings.INTERVENTION_LEVEL >= 10)
+        return true;
+    const result = Math.random() < settings.INTERVENTION_LEVEL / 10;
+    if (result)
+        logInterventionDecision('random', message);
+    return result;
+}
+function logInterventionDecision(reason, message) {
+    console.log(`[介入判定] reason=${reason}, user=${message.author?.username}, content=${message.content}`);
+}
+export { logInterventionDecision };
+function logMetric(metricName, value) {
+    console.log(`[メトリクス] ${metricName}: ${value}`);
+}
+// JST現在時刻取得ヘルパー
 function getNowJST() {
     return new Date(new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }));
 }
-let botConvoState = new Map();
-let botSilenceUntil = null;
+// 時間帯ごとの日本語挨拶
+function greetingJp(date) {
+    const h = date.getHours();
+    if (h < 4)
+        return 'こんばんは';
+    if (h < 11)
+        return 'おはようございます';
+    if (h < 18)
+        return 'こんにちは';
+    return 'こんばんは';
+}
+function isExplicitMention(message) {
+    // メンションまたは「ボッチー」という名前が含まれる場合
+    if (client.user && message.mentions.has(client.user))
+        return true;
+    if (message.content && message.content.includes("ボッチー"))
+        return true;
+    return false;
+}
+// --- AI盛り上がり判定＋動的クールダウン ---
+const channelHistories = new Map();
+const interventionCooldowns = new Map();
+// 直前の介入メッセージをチャンネルごとに記録
+let lastInterventions = new Map();
+// 自然介入のフォールバック送信済みチャネルを管理
+let fallbackSentChannels = new Set();
+// --- 追加: 介入後の積極応答モード管理 ---
+const activeConversationMap = new Map(); // channelId => { turns: number, lastUserId: string|null }
+// --- ボットごとの会話管理 ---
+let botConvoState = new Map(); // botId => { turns, dailyCount, lastResetDate }
+let botSilenceUntil = null; // Date|null: 応答停止終了時刻
+/** 日本時間の今日の日付文字列(YYYY/MM/DD)を返す */
 function getTodayDate() {
     return new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).split(' ')[0];
 }
@@ -82,13 +155,16 @@ client.on("messageCreate", async (message) => {
     const isHuman = !isBot;
     const botId = message.author.id;
     const channelId = message.channel?.id;
+    // --- DMは常に通常応答 ---
     if (!message.guild) {
-        if (message.author.id === client.user?.id)
+        if (client.user && message.author.id === client.user.id)
             return;
         const flags = detectFlags(message, client);
         const action = pickAction(flags);
+        if (!action)
+            return;
         try {
-            await bocchyPipeline({ message, flags, supabase, action });
+            await runPipeline(action, { message, flags, supabase });
         }
         catch (err) {
             console.error('[DM応答エラー]', err);
@@ -96,25 +172,31 @@ client.on("messageCreate", async (message) => {
         }
         return;
     }
-    if (botSilenceUntil && message.mentions.has(client.user)) {
+    // --- 応答停止中の解除判定（メンション時） ---
+    if (botSilenceUntil && client.user && message.mentions.has(client.user)) {
         if (Date.now() < botSilenceUntil) {
             botSilenceUntil = null;
             await message.reply('森から帰ってきたよ🌲✨');
             return;
         }
     }
+    // --- 応答停止中は何も返さない ---
     if (botSilenceUntil && Date.now() < botSilenceUntil)
         return;
+    // --- 「静かに」コマンドで10分間応答停止 ---
     if (/静かに/.test(message.content)) {
         botSilenceUntil = Date.now() + 10 * 60 * 1000;
         await message.reply('10分間森へ遊びに行ってきます…🌲');
         return;
     }
+    // --- 人間の発言には必ず応答（BOT_CHAT_CHANNEL含む） ---
     if (isHuman) {
         const flags = detectFlags(message, client);
         const action = pickAction(flags);
+        if (!action)
+            return;
         try {
-            await bocchyPipeline({ message, flags, supabase, action });
+            await runPipeline(action, { message, flags, supabase });
         }
         catch (err) {
             console.error('[人間応答エラー]', err);
@@ -123,7 +205,8 @@ client.on("messageCreate", async (message) => {
         botConvoState.clear();
         return;
     }
-    if (isBot && channelId === BOT_CHAT_CHANNEL && botId !== client.user?.id) {
+    // --- ボット同士会話制御（BOT_CHAT_CHANNEL限定） ---
+    if (isBot && channelId === BOT_CHAT_CHANNEL && client.user && botId !== client.user.id) {
         const hour = getNowJST().getHours();
         if (hour < RESPONSE_WINDOW_START || hour >= RESPONSE_WINDOW_END) {
             console.log(`[b2b制限] 時間外: hour=${hour}`);
@@ -145,8 +228,10 @@ client.on("messageCreate", async (message) => {
         }
         const flags = detectFlags(message, client);
         const action = pickAction(flags);
+        if (!action)
+            return;
         try {
-            await bocchyPipeline({ message, flags, supabase, action });
+            await runPipeline(action, { message, flags, supabase });
         }
         catch (err) {
             console.error('[ボット同士応答エラー]', err);
@@ -157,10 +242,94 @@ client.on("messageCreate", async (message) => {
         console.log(`[b2b進行] botId=${botId}, turns=${state.turns}, dailyCount=${state.dailyCount}, hour=${hour}`);
         return;
     }
+    // --- それ以外のメッセージは無視 ---
     return;
 });
+async function getExcitementScoreByAI(history) {
+    const prompt = `\n以下はDiscordチャンネルの直近の会話履歴です。\nこの会話が「どれくらい盛り上がっているか」を1〜10のスコアで評価してください。\n10: 非常に盛り上がっている（多人数・活発・感情的・話題性あり）\n1: ほぼ盛り上がっていない（静か・単調・反応が薄い）\nスコアのみを半角数字で返してください。\n---\n${history.slice(-20).map(m => m.author.username + ": " + m.content).join("\n")}\n---\n`;
+    const res = await openai.chat.completions.create({
+        model: "gpt-4.1-nano-2025-04-14",
+        messages: [{ role: "system", content: prompt }]
+    });
+    const score = parseInt(res.choices[0]?.message?.content?.match(/\d+/)?.[0] || "1", 10);
+    return Math.max(1, Math.min(10, score));
+}
+function getCooldownMsByAI(score) {
+    if (score >= 9)
+        return 20 * 1000;
+    if (score >= 7)
+        return 60 * 1000;
+    if (score >= 5)
+        return 2 * 60 * 1000;
+    return 5 * 60 * 1000;
+}
+async function generateInterventionMessage(history) {
+    const prompt = `\n以下の会話の流れを踏まえ、ボットが自然に会話へ参加する一言を日本語で生成してください。\n---\n${history.slice(-10).map(m => m.author.username + ": " + m.content).join("\n")}\n---\n`;
+    const res = await openai.chat.completions.create({
+        model: "gpt-4.1-nano-2025-04-14",
+        messages: [{ role: "system", content: prompt }]
+    });
+    return res.choices[0]?.message?.content?.trim() || '';
+}
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand())
+        return;
+    const chatInteraction = interaction;
+    if (chatInteraction.commandName !== 'ask')
+        return;
+    const userPrompt = chatInteraction.options.getString('prompt', true);
+    await chatInteraction.deferReply();
+    // build context (最小限: ユーザーID, チャンネルID, ギルドID)
+    const userId = chatInteraction.user.id;
+    const channelId = chatInteraction.channelId;
+    const guildId = chatInteraction.guildId || '';
+    // supabase, affinity, history等はrunPipeline相当で取得
+    let affinity = 0;
+    let history = [];
+    if (supabase) {
+        affinity = await getAffinity(userId, guildId);
+        history = await buildHistoryContext(supabase, userId, channelId, guildId, chatInteraction.guild);
+    }
+    const charPrompt = buildCharacterPrompt(chatInteraction, affinity);
+    // OpenAIストリーミング
+    let replyMsg = await chatInteraction.fetchReply();
+    let content = '';
+    try {
+        const stream = await openai.chat.completions.create({
+            model: 'gpt-4.1-nano-2025-04-14',
+            messages: [
+                { role: 'system', content: charPrompt },
+                ...history,
+                { role: 'user', content: userPrompt }
+            ],
+            stream: true,
+        });
+        for await (const chunk of stream) {
+            const delta = chunk.choices?.[0]?.delta?.content || '';
+            if (delta) {
+                content += delta;
+                // 10文字ごとにedit（rate limit対策）
+                if (content.length % 10 === 0) {
+                    await chatInteraction.editReply(content);
+                }
+            }
+        }
+        // 最終反映
+        await chatInteraction.editReply(content);
+        if (supabase)
+            await updateAffinity(userId, guildId, userPrompt);
+        if (supabase)
+            await saveHistory(supabase, replyMsg, userPrompt, content, affinity);
+    }
+    catch (err) {
+        await chatInteraction.editReply('エラーが発生しました。管理者にご連絡ください。');
+        console.error('[ストリーミング応答エラー]', err);
+    }
+});
 client.login(process.env.DISCORD_TOKEN);
+// --- イベントループ強制維持（Railway自動停止対策） ---
 setInterval(() => { }, 10000);
+// --- Railwayヘルスチェック対策: ダミーHTTPサーバー ---
 const port = process.env.PORT || 3000;
 http.createServer((req, res) => {
     if (req.url === '/health') {

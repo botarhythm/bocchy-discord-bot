@@ -1,4 +1,4 @@
-// search/interventionフラグ検出
+import { ChannelType } from 'discord.js';
 export function detectFlags(message, client) {
     const flags = { search: false, intervention: false };
     // 検索フラグ
@@ -21,7 +21,9 @@ export function detectFlags(message, client) {
         flags.search = true;
     }
     // 介入フラグ（DMは常にtrue、またはメンション or サーバーチャンネル）
-    if (!message.guild || message.channel.type === 'DM' || message.mentions.has(client.user) || (message.guild && message.channel.type !== 'DM')) {
+    const isDM = message.channel.type === ChannelType.DM;
+    const isMention = client.user ? message.mentions.has(client.user) : false;
+    if (!message.guild || isDM || isMention || (message.guild && !isDM)) {
         flags.intervention = true;
     }
     return flags;

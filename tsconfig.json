@@ -10,10 +10,10 @@
     "allowJs": true,
     "checkJs": false,
     "outDir": "dist",
-    "rootDir": "./",
+    "rootDir": "src",
     "resolveJsonModule": true,
     "isolatedModules": true
   },
-  "include": ["src/**/*", "config/**/*"],
+  "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 } 
