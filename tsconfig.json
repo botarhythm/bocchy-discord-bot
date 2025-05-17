@@ -12,8 +12,7 @@
     "outDir": "dist",
     "rootDir": "./",
     "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true
+    "isolatedModules": true
   },
   "include": ["src/**/*", "config/**/*"],
   "exclude": ["node_modules", "dist"]
