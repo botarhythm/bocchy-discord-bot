@@ -945,3 +945,29 @@ async function getGuildMemberNames(guild: Guild, limit: number): Promise<string[
 }
 
 export { getAffinity, buildCharacterPrompt, updateAffinity, saveHistory };
+
+// deepCrawlの結果をユーザーに返すための新しい関数
+export async function replyDeepCrawlSummary(url: string, userPrompt: string, message: Message, affinity: number) {
+  try {
+    const userId = message.author.id;
+    const isAdmin = false; // 必要に応じて判定
+    const results = await deepCrawl(url, userId, isAdmin);
+    if (!results || results.length === 0) {
+      await message.reply('ディープクロールの結果、情報が取得できませんでした。URLやリンク先が無効か、クロールが制限されている可能性があります。');
+      return;
+    }
+    // 各ページのタイトル・抜粋・URLをリスト化
+    const topResults = results.slice(0, 3);
+    let intro = `指定されたURLとそのリンク先をクロールし、以下の情報が得られました。\n`;
+    topResults.forEach((r, idx) => {
+      const title = r.content ? r.content.split('\n')[0].slice(0, 60) : '';
+      const excerpt = r.content ? r.content.slice(0, 200) : '';
+      intro += `\n${idx+1}. タイトル: ${title}\n抜粋: ${excerpt}\nURL: ${r.url}\n`;
+    });
+    let prompt = `${intro}\n\nこれらのページから分かること・共通点・特徴を要約してください。`;
+    const llmAnswer = await llmRespond(userPrompt, prompt, message, [], buildCharacterPrompt(message, affinity));
+    await message.reply(intro + '\n' + llmAnswer);
+  } catch (e) {
+    await message.reply('ディープクロール中にエラーが発生しました。管理者にご連絡ください。');
+  }
+}
