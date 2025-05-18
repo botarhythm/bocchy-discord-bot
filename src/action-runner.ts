@@ -870,6 +870,10 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
     // --- 短期記憶バッファにユーザー発話を記録 ---
     memory.addMessage('user', message.content);
 
+    // --- テスト仕様同期コメント ---
+    // テスト（test/handlers/action-runner.test.ts）では「コメントにURLが含まれる場合は必ずfetchPageContentが呼ばれ、LLM応答が返る」ことを期待している。
+    // そのため、実装でも必ずURL検出時はfetchPageContent＋LLM要約を実行すること。
+
     // --- クエリ主導型: 検索・クロール命令が含まれる場合は必ず検索・クロールを実行 ---
     if (/(検索|調べて|天気|ニュース|速報|URL|リンク|要約|まとめて|Web|web|ウェブ|サイト|ページ|情報|教えて|見つけて|リサーチ)/i.test(message.content)) {
       // enhancedSearchで検索・クロール→LLM要約
@@ -878,6 +882,34 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
       await message.reply(answer);
       if (supabase) await updateAffinity(userId, guildId, message.content);
       if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
+      return;
+    }
+
+    // --- URLが含まれる場合は必ずfetchPageContent＋LLM要約を実行 ---
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const urls = message.content.match(urlRegex) || [];
+    if (urls.length > 0) {
+      // 1件目のみ要約（複数URL対応は今後拡張可）
+      const url = urls[0];
+      let pageContent = '';
+      let errorMsg = '';
+      try {
+        pageContent = await fetchPageContent(url);
+      } catch (e) {
+        errorMsg = '[fetchPageContentエラー] ' + (e && typeof e === 'object' && 'message' in e ? (e as any).message : String(e));
+      }
+      let llmAnswer = '';
+      if (pageContent && pageContent.length > 50) {
+        const systemPromptUrl = `【重要】以下のURL内容を必ず参照し、事実に基づいて答えてください。創作や推測は禁止です。\n----\n${pageContent.slice(0, 2000)}\n----\n`;
+        const userPromptUrl = `このURL（${url}）の内容を要約し、特徴を事実ベースで説明してください。創作や推測は禁止です。`;
+        llmAnswer = await llmRespond(userPromptUrl, systemPromptUrl, message, [], buildCharacterPrompt(message, affinity));
+      } else {
+        llmAnswer = errorMsg || 'ページ内容が取得できませんでした。URLが無効か、クロールが制限されている可能性があります。';
+      }
+      memory.addMessage('assistant', llmAnswer);
+      await message.reply(llmAnswer);
+      if (supabase) await updateAffinity(userId, guildId, message.content);
+      if (supabase) await saveHistory(supabase, message, message.content, llmAnswer, affinity);
       return;
     }
 
