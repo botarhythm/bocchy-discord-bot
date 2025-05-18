@@ -807,20 +807,50 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
     `ユーザーの質問:「${query}」\n検索結果タイトル:「${title}」\nスニペット:「${snippet}」\nこの検索結果は質問に少しでも関係していますか？迷った場合や部分的にでも関係があれば「はい」とだけ返答してください。`;
   const relChecks = await Promise.all(
     pageContents.map(async pg => {
-      const rel = await llmRespond(userPrompt, relPrompt(userPrompt, pg.title, pg.snippet), null, [], null, 0.3);
-      console.debug('[enhancedSearch] 関連度判定応答:', rel, 'title:', pg.title);
-      return rel.toLowerCase().includes('はい');
+      try {
+        const rel = await llmRespond(userPrompt, relPrompt(userPrompt, pg.title, pg.snippet), null, [], null, 0.3);
+        console.debug('[enhancedSearch] 関連度判定応答:', rel, 'title:', pg.title);
+        return rel.toLowerCase().includes('はい');
+      } catch (e) {
+        console.debug('[enhancedSearch] 関連度判定例外:', e, 'title:', pg.title);
+        return false;
+      }
     })
   );
   pageContents = pageContents.filter((pg, i) => relChecks[i]);
+  // --- 追加: 関連度判定で全て除外された場合は最初の1件を必ず残す ---
+  if (pageContents.length === 0 && allResults.length > 0) {
+    console.warn('[enhancedSearch] 関連度判定で全除外→最初の1件を強制採用:', allResults[0]);
+    pageContents.push(allResults[0]);
+  }
   // 5) Markdown整形・比較/矛盾指摘テンプレート
   const useMarkdown = bocchyConfig.output_preferences?.format === 'markdown';
   if (pageContents.length === 0 || pageContents.every(pg => !pg.text.trim())) {
-    // 検索で見つからなかった場合、LLMで一般知識・推論回答を生成
-    const fallbackPrompt =
-      `Web検索では直接的な情報が見つかりませんでしたが、一般的な知識や推論でお答えします。\n\n質問: ${userPrompt}` +
-      (useMarkdown ? '\n\n【出力形式】Markdownで見やすくまとめてください。' : '');
-    const fallbackAnswer = await llmRespond(userPrompt, fallbackPrompt, message, [], buildCharacterPrompt(message, affinity));
+    // --- fallbackPromptでも検索結果を必ず引用 ---
+    let fallbackText = `Web検索では直接的な情報が見つかりませんでしたが、一般的な知識や推論でお答えします。\n\n質問: ${userPrompt}`;
+    if (allResults.length > 0) {
+      const first = allResults[0];
+      fallbackText += `\n\n【参考になりそうな検索結果】\nタイトル: ${first.title}\nスニペット: ${first.snippet}\nURL: ${first.link}`;
+      fallbackText += '\n\n【重要】必ず上記の検索結果情報（タイトル・スニペット・URL）を文中で引用し、URLも明記してください。';
+    }
+    fallbackText += useMarkdown ? '\n\n【出力形式】Markdownで見やすくまとめてください。' : '';
+    console.debug('[enhancedSearch][fallbackPrompt] LLMプロンプト全文:', fallbackText);
+    const fallbackAnswer = await llmRespond(userPrompt, fallbackText, message, [], buildCharacterPrompt(message, affinity));
+    console.debug('[enhancedSearch][fallbackPrompt] LLM応答全文:', fallbackAnswer);
+    // --- titleやURLが含まれていなければ自動で追記 ---
+    if (allResults.length > 0) {
+      const first = allResults[0];
+      const mustInclude = [first.title, first.link];
+      let needsAppend = false;
+      for (const item of mustInclude) {
+        if (item && !fallbackAnswer.includes(item)) needsAppend = true;
+      }
+      let finalAnswer = fallbackAnswer;
+      if (needsAppend) {
+        finalAnswer += `\n\n【参考情報（自動追記）】\nタイトル: ${first.title}\nURL: ${first.link}`;
+      }
+      return { answer: finalAnswer, results: allResults.length > 0 ? [allResults[0]] : [] };
+    }
     return { answer: fallbackAnswer, results: [] };
   }
   // 比較・矛盾指摘プロンプト
