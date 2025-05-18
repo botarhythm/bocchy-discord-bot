@@ -20,14 +20,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { LRUCache } from 'lru-cache';
 import { SubjectTracker, extractSubjectCandidates, createBranchNode, buildPrompt } from './utils/index.js';
-import {
-  CRAWL_MAX_DEPTH,
-  CRAWL_MAX_LINKS_PER_PAGE,
-  CRAWL_API_MAX_CALLS_PER_REQUEST,
-  CRAWL_API_MAX_CALLS_PER_USER_PER_DAY,
-  CRAWL_CACHE_TTL_MINUTES,
-  BASE
-} from './config/rules.js';
+import { CRAWL_MAX_DEPTH, CRAWL_MAX_LINKS_PER_PAGE, CRAWL_API_MAX_CALLS_PER_REQUEST, CRAWL_API_MAX_CALLS_PER_USER_PER_DAY, CRAWL_CACHE_TTL_MINUTES, BASE } from './config/rules.js';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 import { strictWebGroundedSummarize } from './utils/llmGrounded.js';
