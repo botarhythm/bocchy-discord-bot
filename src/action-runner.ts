@@ -20,19 +20,24 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { LRUCache } from 'lru-cache';
 import { SubjectTracker, extractSubjectCandidates, createBranchNode, buildPrompt } from './utils/index.js';
-import path from 'path';
-const rules = require(path.resolve('config/rules.js'));
+import {
+  CRAWL_MAX_DEPTH,
+  CRAWL_MAX_LINKS_PER_PAGE,
+  CRAWL_API_MAX_CALLS_PER_REQUEST,
+  CRAWL_API_MAX_CALLS_PER_USER_PER_DAY,
+  CRAWL_CACHE_TTL_MINUTES
+} from './config/rules.js';
 
 // --- クロールAPI利用回数管理 ---
 const userCrawlCount = new Map(); // userId: { date: string, count: number }
-const crawlCache = new LRUCache<string, any>({ max: 256, ttl: 1000 * 60 * (rules.CRAWL_CACHE_TTL_MINUTES || 10) });
+const crawlCache = new LRUCache<string, any>({ max: 256, ttl: 1000 * 60 * (CRAWL_CACHE_TTL_MINUTES || 10) });
 
 function getCrawlLimit(userId: string, isAdmin: boolean) {
   return {
-    maxDepth: isAdmin ? rules.CRAWL_MAX_DEPTH.admin : rules.CRAWL_MAX_DEPTH.user,
-    maxLinks: isAdmin ? rules.CRAWL_MAX_LINKS_PER_PAGE.admin : rules.CRAWL_MAX_LINKS_PER_PAGE.user,
-    maxCalls: isAdmin ? rules.CRAWL_API_MAX_CALLS_PER_REQUEST.admin : rules.CRAWL_API_MAX_CALLS_PER_REQUEST.user,
-    maxPerDay: isAdmin ? rules.CRAWL_API_MAX_CALLS_PER_USER_PER_DAY.admin : rules.CRAWL_API_MAX_CALLS_PER_USER_PER_DAY.user,
+    maxDepth: isAdmin ? CRAWL_MAX_DEPTH.admin : CRAWL_MAX_DEPTH.user,
+    maxLinks: isAdmin ? CRAWL_MAX_LINKS_PER_PAGE.admin : CRAWL_MAX_LINKS_PER_PAGE.user,
+    maxCalls: isAdmin ? CRAWL_API_MAX_CALLS_PER_REQUEST.admin : CRAWL_API_MAX_CALLS_PER_REQUEST.user,
+    maxPerDay: isAdmin ? CRAWL_API_MAX_CALLS_PER_USER_PER_DAY.admin : CRAWL_API_MAX_CALLS_PER_USER_PER_DAY.user,
   };
 }
 

@@ -5,7 +5,7 @@ import { openai } from './services/openai.js';
 import { supabase } from './services/supabase.js';
 import { detectFlags } from "./flag-detector.js";
 import { pickAction } from "./decision-engine.js";
-import { runPipeline, shouldContextuallyIntervene, buildHistoryContext, getAffinity, buildCharacterPrompt, updateAffinity, saveHistory, deepCrawl, summarizeWebPage } from "./action-runner.js";
+import { runPipeline, shouldContextuallyIntervene, buildHistoryContext, getAffinity, buildCharacterPrompt, updateAffinity, saveHistory, deepCrawl, summarizeWebPage, fetchPageContent } from "./action-runner.js";
 import http from 'http';
 import { BOT_CHAT_CHANNEL, MAX_ACTIVE_TURNS, MAX_BOT_CONVO_TURNS, MAX_DAILY_RESPONSES, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END, EMERGENCY_STOP } from './config/index.js';
 
@@ -176,7 +176,7 @@ function getTodayDate() {
 // --- チャンネルごとの直近URL・要約の短期記憶 ---
 const recentUrlMap = new Map(); // channelId => { url: string, summary: string, timestamp: number }
 
-function extractUrls(text) {
+function extractUrls(text: string): string[] {
   const urlRegex = /(https?:\/\/[^\s]+)/g;
   return text.match(urlRegex) || [];
 }
@@ -304,7 +304,7 @@ client.on("messageCreate", async (message) => {
         const main = results[0];
         let reply = `【${main.url}】\n---\n${main.content.slice(0, 500)}...\n---\n`;
         if (main.links && main.links.length) {
-          reply += `\n【このページの主要リンク】\n` + main.links.map((l, i) => `・${l}`).join('\n');
+          reply += `\n【このページの主要リンク】\n` + main.links.map((l: string, i: number) => `・${l}`).join('\n');
         }
         await message.reply(reply.slice(0, 1800));
       } catch (e) {
@@ -314,8 +314,7 @@ client.on("messageCreate", async (message) => {
       return;
     }
     // 通常のrunPipeline等でもrecent.summaryをプロンプトに含める（例示: flagsにrecentSummaryを追加）
-    message.flags = message.flags || {};
-    message.flags.recentUrlSummary = recent.summary;
+    (message as any).recentUrlSummary = recent.summary;
   }
 
   // --- それ以外のメッセージは無視 ---
