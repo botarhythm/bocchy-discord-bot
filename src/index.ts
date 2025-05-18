@@ -246,7 +246,8 @@ client.on("messageCreate", async (message) => {
 
   // --- 検索ニーズがある場合（例: "教えて", "特徴", "検索" など） ---
   const searchKeywords = ["教えて", "特徴", "検索", "調べて", "とは", "まとめ", "要約", "解説"];
-  const searchPattern = new RegExp(searchKeywords.join('|'));
+  const searchPattern = new RegExp(searchKeywords.join('|'), 'i');
+  console.log('[DEBUG] searchPattern:', searchPattern, 'test:', searchPattern.test(message.content));
   if (searchPattern.test(message.content)) {
     console.log('[DEBUG] 検索キーワード分岐に到達:', message.content);
     console.log('[DEBUG] GOOGLE_API_KEY:', process.env.GOOGLE_API_KEY ? 'set' : 'unset');
