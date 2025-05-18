@@ -295,6 +295,8 @@ client.on("messageCreate", async (message) => {
       // URL要約後も通常AI応答を必ず実行（プロンプトにsummaryを含める）
       const flags = detectFlags(message, client) || {};
       (flags as any).recentUrlSummary = summary;
+      (flags as any).forceUrlSummaryMode = true;
+      (flags as any).url = urls[0];
       const action = pickAction(flags);
       if (action) await runPipeline(action, { message, flags, supabase });
     } catch (e) {

@@ -802,14 +802,18 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
       messages: [message.content],
     });
     // 4. 主語明示型プロンプト生成
-    const prompt = buildPrompt(branch);
-    // --- recentUrlSummaryがあればsystemPromptに必ず挿入 ---
+    let prompt = buildPrompt(branch);
     let systemPrompt = '';
-    if (flags && flags.recentUrlSummary) {
-      systemPrompt += `【重要】以下のURL内容を必ず参照し、事実に基づいて答えてください。創作や推測は禁止です。\n----\n${flags.recentUrlSummary}\n----\n`;
+    let userPrompt = message.content;
+    let history: any[] = [];
+    // --- URL要約強制モード ---
+    if (flags && flags.forceUrlSummaryMode && flags.recentUrlSummary && flags.url) {
+      systemPrompt = `【重要】以下のURL内容を必ず参照し、事実に基づいて答えてください。創作や推測は禁止です。\n----\n${flags.recentUrlSummary}\n----\n`;
+      userPrompt = `このURL（${flags.url}）の内容を要約し、特徴を事実ベースで説明してください。創作や推測は禁止です。`;
+      history = [];
     }
     // 5. LLM応答生成
-    const answer = await llmRespond(message.content, systemPrompt + prompt, message);
+    const answer = await llmRespond(userPrompt, systemPrompt + prompt, message, history);
     await message.reply(answer);
     if (supabase) await updateAffinity(userId, guildId, message.content);
     if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
