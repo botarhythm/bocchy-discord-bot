@@ -19,6 +19,7 @@ import { Message, Guild, Client, ChatInputCommandInteraction } from 'discord.js'
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { LRUCache } from 'lru-cache';
+import { SubjectTracker, extractSubjectCandidates, createBranchNode, buildPrompt } from './utils/index.js';
 
 // --- 型定義 ---
 export interface UserProfile {
@@ -723,76 +724,23 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
     const guildId = message.guild?.id || '';
     // 親密度取得
     const affinity = supabase ? await getAffinity(userId, guildId) : 0;
-    // --- URLが含まれる場合は必ずクロール＆要約 ---
-    const urls = message.content.match(urlRegex);
-    console.log('[デバッグ] runPipeline: message.content =', message.content);
-    console.log('[デバッグ] runPipeline: 検出URL =', urls);
-    if (urls && urls.length > 0) {
-      for (const url of urls) {
-        try {
-          console.log(`[Webクロール開始] ${url}`);
-          const raw = await fetchPageContent(url);
-          console.log(`[Webクロール取得結果]`, raw?.slice?.(0, 200));
-          if (!raw || raw.length < 30) {
-            console.warn(`[デバッグ] fetchPageContent失敗または内容短すぎ: url=${url}, raw=${raw}`);
-          }
-          const summary = await summarizeWebPage(raw, message.content, message, buildCharacterPrompt(message, affinity));
-          await message.reply(`【${url}の要約】\n${summary}`);
-          console.log(`[Webクロール要約完了] ${url}`);
-        } catch (e) {
-          let errMsg = 'URLクロール・要約に失敗しました:';
-          if (typeof e === 'object' && e && 'message' in e) errMsg += ` ${(e as any).message}`;
-          else errMsg += ` ${e}`;
-          await message.reply(errMsg);
-        }
-      }
-      return;
-    }
-    // --- 指示語パターンを徹底拡張（自然な日本語も網羅） ---
-    const referPrevEntityPattern = /(さっきのURL|前のURL|先ほどのURL|上記のURL|そのURL|このURL|さっきの.*サイト|前の.*ページ|その.*お店|コーヒーのサイト|さっきのニュース|前のリンク|その話題|その話|前の話題|さっきシェアしたニュース|さっき貼ったリンク|さっき送った記事|さっき送ったニュース|さっきのトピック|上の話題|上のリンク|上のニュース|直前の話題|直前のリンク|直前のニュース|さっきの投稿|さっきの共有|さっきのメッセージ|さっきの内容|さっきのやつ|上記の内容|上記のやつ|この話題|このニュース|このリンク|この人|この選手|この試合|誰が活躍|どの試合|どの選手|どの人|活躍した|どんなスポーツ|どのスポーツ|どのイベント|どの大会|どのチーム|どのクラブ|どの球団|どの選手|どのプレイヤー|どのスター|どのヒーロー|どのヒロイン|どの監督|どのコーチ|どの審判|どの解説|どの実況|どの観客|どの応援|どのファン|どの観戦|どの現地|どの現場|どの現役|どの引退|どの移籍|どの契約|どの記録|どの得点|どのゴール|どのホームラン|どの打点|どのアシスト|どのセーブ|どの失点|どの勝利|どの敗戦|どの引き分け|どの優勝|どの準優勝|どの入賞|どの表彰|どの受賞|どのタイトル|どの記念|どの祝福|どの感動|どの涙|どの笑顔|どの歓声|どの拍手|どのブーイング|どの事件|どの事故|どのトラブル|どのニュース|どの話|どの話題|どの内容|どの出来事|どの出来ごと|どのエピソード|どのストーリー|どの物語|どの伝説|どの神話|どの逸話|どの噂|どの評判|どの評価|どの感想|どの意見|どの考え|どの気持ち|どの感情|どの思い|どの願い|どの希望|どの夢|どの目標|どの目的|どの理由|どの原因|どの背景|どの事情|どの状況|どの現状|どの現実|どの未来|どの過去|どの現在|どの時代|どの年代|どの世代|どの歴史|どの文化|どの伝統|どの習慣|どの風習|どの流行|どのブーム|どのトレンド|どの人気|どの話題|どの注目|どの注視|どの注釈|どの注目点|どの注目選手|どの注目試合|どの注目イベント|どの注目大会|どの注目チーム|どの注目クラブ|どの注目球団|どの注目プレイヤー|どの注目スター|どの注目ヒーロー|どの注目ヒロイン|どの注目監督|どの注目コーチ|どの注目審判|どの注目解説|どの注目実況|どの注目観客|どの注目応援|どの注目ファン|どの注目観戦|どの注目現地|どの注目現場|どの注目現役|どの注目引退|どの注目移籍|どの注目契約|どの注目記録|どの注目得点|どの注目ゴール|どの注目ホームラン|どの注目打点|どの注目アシスト|どの注目セーブ|どの注目失点|どの注目勝利|どの注目敗戦|どの注目引き分け|どの注目優勝|どの注目準優勝|どの注目入賞|どの注目表彰|どの注目受賞|どの注目タイトル|どの注目記念|どの注目祝福|どの注目感動|どの注目涙|どの注目笑顔|どの注目歓声|どの注目拍手|どの注目ブーイング|どの注目事件|どの注目事故|どの注目トラブル|どの注目ニュース|どの注目話|どの注目話題|どの注目内容|どの注目出来事|どの注目出来ごと|どの注目エピソード|どの注目ストーリー|どの注目物語|どの注目伝説|どの注目神話|どの注目逸話|どの注目噂|どの注目評判|どの注目評価|どの注目感想|どの注目意見|どの注目考え|どの注目気持ち|どの注目感情|どの注目思い|どの注目願い|どの注目希望|どの注目夢|どの注目目標|どの注目目的|どの注目理由|どの注目原因|どの注目背景|どの注目事情|どの注目状況|どの注目現状|どの注目現実|どの注目未来|どの注目過去|どの注目現在|どの注目時代|どの注目年代|どの注目世代|どの注目歴史|どの注目文化|どの注目伝統|どの注目習慣|どの注目風習|どの注目流行|どの注目ブーム|どの注目トレンド|どの注目人気)/i;
-    let history = [];
-    let userProfile = null;
-    let globalContext = null;
-    if (supabase) {
-      history = await buildHistoryContext(supabase, userId, channelId, guildId, message.guild);
-    }
-    // --- 指示語検知時はentitiesから直前のperson, event, sportも抽出し、system promptに明示的に挿入
-    // system prompt例：「"試合"や"活躍"などの指示語が出た場合は、history内の【直前のevent】【直前のperson】【直前のニュース要約】systemメッセージを必ず参照し、内容を踏まえて回答してください」
-    if (referPrevEntityPattern.test(message.content)) {
-      // entities優先
-      let prevPerson = null;
-      let prevEvent = null;
-      let prevSport = null;
-      for (let i = history.length - 1; i >= 0; i--) {
-        const h = history[i];
-        if (h.entities?.persons?.length && !prevPerson) {
-          prevPerson = h.entities.persons[h.entities.persons.length - 1];
-        }
-        if (h.entities?.events?.length && !prevEvent) {
-          prevEvent = h.entities.events[h.entities.events.length - 1];
-        }
-        if (h.entities?.sports?.length && !prevSport) {
-          prevSport = h.entities.sports[h.entities.sports.length - 1];
-        }
-        if (prevPerson && prevEvent && prevSport) break;
-      }
-      // system promptに明示的に挿入（冒頭に必ず）
-      let sysMsg = '';
-      if (prevPerson) sysMsg += `【直前のperson】${prevPerson}\n`;
-      if (prevEvent) sysMsg += `【直前のevent】${prevEvent}\n`;
-      if (prevSport) sysMsg += `【直前のsport】${prevSport}\n`;
-      if (sysMsg) {
-        sysMsg = '【最重要】この会話の直前の内容を必ず参照してください。historyのsystemメッセージ（直前の要約・URL・タイトル）は絶対に無視せず、指示語が出た場合は必ずこれらを根拠に回答してください。\n' + sysMsg;
-        history.unshift({ role: 'system', content: sysMsg });
-      }
-    }
-    // --- キャラクタープロンプト/systemメッセージでhistory参照の強制をさらに強調 ---
-    const charPrompt = buildCharacterPrompt(message, affinity, userProfile, globalContext)
-      + '\n【最重要】どんな質問・指示語・曖昧な表現でも、history内のsystemメッセージ（直前の話題・要約・課題・技術的文脈・意図推察・多角的推論など）を必ず最優先で参照し、その文脈に即した応答を生成してください。'
-      + '\n【推論指示】もし曖昧な質問や指示語が出た場合は、historyの直前の話題・要約・課題・文脈・多角的推論を根拠に推論し、最も自然な文脈的解釈で答えてください。'
-      + '\n【禁止事項】historyのsystemメッセージを無視したり、一般論や抽象的な返答に流れず、必ず文脈に即した具体的な応答を心がけてください。'
-      + '\n【人間らしさ】historyの多角的推論を活かし、複数の切り口や余白を持った人間らしい返答を生成してください。';
-    const answer = await llmRespond(message.content, '', message, history, charPrompt);
+    // --- 主語トラッキング ---
+    const subjectTracker = new SubjectTracker();
+    // 1. NLPで主語候補抽出
+    const nlpCandidates = extractSubjectCandidates(message.content);
+    // 2. 履歴やNLP候補から主語を推定
+    const subject = subjectTracker.guessSubject(nlpCandidates) || SubjectTracker.getDefaultSubject();
+    // 3. 分岐ツリー型ノード生成（仮説は未実装、メイン分岐のみ）
+    const branch = createBranchNode({
+      id: `${userId}-${Date.now()}`,
+      parentId: null,
+      subject,
+      messages: [message.content],
+    });
+    // 4. 主語明示型プロンプト生成
+    const prompt = buildPrompt(branch);
+    // 5. LLM応答生成
+    const answer = await llmRespond(message.content, prompt, message);
     await message.reply(answer);
     if (supabase) await updateAffinity(userId, guildId, message.content);
     if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
