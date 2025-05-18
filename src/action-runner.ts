@@ -512,7 +512,7 @@ export async function buildHistoryContext(
 
 // --- ChatGPT風: Webページクロール＆自然言語要約 ---
 export async function fetchPageContent(url: string): Promise<string> {
-  console.log('[fetchPageContent] クロール対象URL:', url);
+  console.debug('[fetchPageContent] 入力URL:', url);
   let content = '';
   let errorMsg = '';
   // 1. puppeteerで動的レンダリング＋readability
@@ -526,7 +526,7 @@ export async function fetchPageContent(url: string): Promise<string> {
     const reader = new Readability(dom.window.document);
     const article = reader.parse();
     if (article && article.textContent && article.textContent.replace(/\s/g, '').length > 100) {
-      console.log('[fetchPageContent] puppeteer/readability成功:', article.textContent.slice(0, 200), '...length:', article.textContent.length);
+      console.debug('[fetchPageContent] puppeteer/readability成功:', article.textContent.slice(0, 200), '...length:', article.textContent.length);
       return article.textContent.trim();
     }
     // 補助: main/article/body/p/meta/og/h1/h2
@@ -543,7 +543,7 @@ export async function fetchPageContent(url: string): Promise<string> {
       $('p').map((_i, el) => $(el).text()).get().join('\n')
     ].filter(Boolean).join('\n');
     if (text.replace(/\s/g, '').length > 100) {
-      console.log('[fetchPageContent] puppeteer/cheerio補助成功:', text.slice(0, 200), '...length:', text.length);
+      console.debug('[fetchPageContent] puppeteer/cheerio補助成功:', text.slice(0, 200), '...length:', text.length);
       return text.trim();
     }
   } catch (e) {
@@ -562,7 +562,7 @@ export async function fetchPageContent(url: string): Promise<string> {
     const reader = new Readability(dom.window.document);
     const article = reader.parse();
     if (article && article.textContent && article.textContent.replace(/\s/g, '').length > 100) {
-      console.log('[fetchPageContent] fetch/readability成功:', article.textContent.slice(0, 200), '...length:', article.textContent.length);
+      console.debug('[fetchPageContent] fetch/readability成功:', article.textContent.slice(0, 200), '...length:', article.textContent.length);
       return article.textContent.trim();
     }
     // 補助: main/article/body/p/meta/og/h1/h2
@@ -579,7 +579,7 @@ export async function fetchPageContent(url: string): Promise<string> {
       $('p').map((_i, el) => $(el).text()).get().join('\n')
     ].filter(Boolean).join('\n');
     if (text.replace(/\s/g, '').length > 100) {
-      console.log('[fetchPageContent] fetch/cheerio補助成功:', text.slice(0, 200), '...length:', text.length);
+      console.debug('[fetchPageContent] fetch/cheerio補助成功:', text.slice(0, 200), '...length:', text.length);
       return text.trim();
     }
     errorMsg += '[cheerio/readabilityも短すぎ]';
@@ -597,14 +597,14 @@ export async function fetchPageContent(url: string): Promise<string> {
 
 // --- ChatGPT風: Webページ内容をLLMで自然言語要約 ---
 export async function summarizeWebPage(url: string): Promise<string> {
-  console.log('[summarizeWebPage] 要約対象URL:', url);
+  console.debug('[summarizeWebPage] 入力URL:', url);
   if (!url || url.length < 8) {
     console.warn('[summarizeWebPage] URLが無効:', url);
     return 'ページ内容が取得できませんでした。URLが無効か、クロールが制限されている可能性があります。';
   }
   // Strict Web Grounding型で要約（新: 二段階パイプライン）
   const summary = await strictWebGroundedSummarize(url);
-  console.log('[summarizeWebPage] 要約結果:', summary);
+  console.debug('[summarizeWebPage] 要約結果:', summary);
   return summary;
 }
 
@@ -612,18 +612,20 @@ export async function summarizeWebPage(url: string): Promise<string> {
 async function googleSearch(query: string, attempt: number = 0): Promise<any[]> {
   const apiKey = process.env.GOOGLE_API_KEY;
   const cseId = process.env.GOOGLE_CSE_ID;
+  console.debug('[googleSearch] 入力クエリ:', query, 'API_KEY:', apiKey ? 'set' : 'unset', 'CSE_ID:', cseId ? 'set' : 'unset');
   if (!apiKey || !cseId) {
-    console.warn('Google APIキーまたはCSE IDが未設定です');
+    console.warn('[googleSearch] Google APIキーまたはCSE IDが未設定です');
     return [];
   }
   if (!query) {
-    console.warn('検索クエリが空です');
+    console.warn('[googleSearch] 検索クエリが空です');
     return [];
   }
   const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}` +
               `&q=${encodeURIComponent(query)}&hl=ja&gl=jp&lr=lang_ja&sort=date`;
   try {
     const res = await fetch(url);
+    console.debug('[googleSearch] APIリクエストURL:', url, 'status:', res.status);
     if (!res.ok) {
       const errText = await res.text();
       console.warn(`[googleSearch] Google APIエラー: status=${res.status} body=${errText}`);
@@ -634,6 +636,7 @@ async function googleSearch(query: string, attempt: number = 0): Promise<any[]> 
       return [];
     }
     const data = await res.json() as any;
+    console.debug('[googleSearch] APIレスポンス:', JSON.stringify(data).slice(0, 500));
     if (!data.items || data.items.length === 0) {
       if (data.error) {
         console.warn(`[googleSearch] Google APIレスポンスエラー:`, data.error);
@@ -680,10 +683,12 @@ async function llmRespond(prompt: string, systemPrompt: string = "", message: Me
     ...history
   ];
   messages.push({ role: "user", content: prompt });
+  console.debug('[llmRespond] 入力messages:', JSON.stringify(messages).slice(0, 1000));
   const completion = await await queuedOpenAI(() => openai.chat.completions.create({
     model: 'gpt-4.1-nano-2025-04-14',
     messages
   }));
+  console.debug('[llmRespond] LLM応答:', completion.choices[0]?.message?.content);
   return completion.choices[0]?.message?.content || "ごめんなさい、うまく答えられませんでした。";
 }
 
@@ -729,6 +734,7 @@ function appendDateAndImpactWordsIfNeeded(userPrompt: string, query: string): st
 
 // ---- 新: ChatGPT風・自然なWeb検索体験 ----
 async function enhancedSearch(userPrompt: string, message: Message, affinity: number, supabase: SupabaseClient): Promise<{ answer: string, results: any[] }> {
+  console.debug('[enhancedSearch] 入力:', { userPrompt, affinity });
   // 1) 検索クエリ生成（多様化: 3パターン）
   let queries: string[] = [];
   for (let i = 0; i < 3; i++) {
@@ -742,12 +748,14 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
     q = appendDateAndImpactWordsIfNeeded(userPrompt, q);
     if (q && !queries.includes(q)) queries.push(q);
   }
+  console.debug('[enhancedSearch] 検索クエリ:', queries);
   // 2) 検索実行（重複URL・ドメイン多様性）
   let allResults = [];
   let seenLinks = new Set();
   let seenDomains = new Set();
   for (const query of queries) {
     let results = await googleSearch(query);
+    console.debug('[enhancedSearch] googleSearch結果:', results);
     for (const r of results) {
       const domain = r.link.match(/^https?:\/\/(.*?)(\/|$)/)?.[1] || '';
       if (!seenLinks.has(r.link) && !seenDomains.has(domain)) {
@@ -780,6 +788,7 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
       }
     })
   );
+  console.debug('[enhancedSearch] ページ内容抽出結果:', pageContents);
   // 4) LLMで関連度判定し、低いものは除外
   const relPrompt = (query: string, title: string, snippet: string) =>
     `ユーザーの質問:「${query}」\n検索結果タイトル:「${title}」\nスニペット:「${snippet}」\nこの検索結果は質問に直接関係していますか？関係が深い場合は「はい」、そうでなければ「いいえ」とだけ返答してください。`;
@@ -809,7 +818,9 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
     (useMarkdown ? '\n\n【出力形式】\n- 箇条書きや表を活用し、Markdownで見やすくまとめてください。\n- 参考URLは[1]や【1】のように文中で引用してください。' : '') +
     `\n\n【検索結果要約】\n${docs}\n\n【参考URLリスト】\n${urlList}\n\n` +
     `・信頼できる情報源を優先し、事実ベースで簡潔にまとめてください。\n・必要に応じて参考URLを文中で引用してください。`;
+  console.debug('[enhancedSearch] LLM要約プロンプト:', systemPrompt);
   let answer = await llmRespond(userPrompt, systemPrompt, message, [], buildCharacterPrompt(message, affinity));
+  console.debug('[enhancedSearch] LLM応答:', answer);
   // --- 修正: 関連度が2件以上ある場合のみ出典URLを付与 ---
   if (pageContents.length >= 2) {
     answer += (useMarkdown ? `\n\n**【出典URL】**\n` : '\n\n【出典URL】\n') + pageContents.map((pg,i) => `【${i+1}】${pg.link}`).join('\n');
