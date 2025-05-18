@@ -278,19 +278,28 @@ client.on("messageCreate", async (message) => {
   // --- URLが含まれていれば即時要約・記憶 ---
   if (urls.length > 0) {
     try {
-      await message.reply('URLを要約中です…');
-      const content = await fetchPageContent(urls[0]);
-      const summary = await summarizeWebPage(content, '', message);
+      await message.reply('URLをディープクロール中です…');
+      const results = await deepCrawl(urls[0], userId, isAdmin);
+      if (!results.length) {
+        await message.reply('URLのクロール結果が取得できませんでした。');
+        return;
+      }
+      const main = results[0];
+      // 主要リンク抽出
+      let summary = `【${main.url}】\n---\n${main.content.slice(0, 500)}...\n---\n`;
+      if (main.links && main.links.length) {
+        summary += `\n【このページの主要リンク】\n` + main.links.map((l: string, i: number) => `・${l}`).join('\n');
+      }
       recentUrlMap.set(channelId, { url: urls[0], summary, timestamp: Date.now() });
-      await message.reply(`【URL要約】\n${summary.slice(0, 1500)}`);
-      // URL要約後も通常AI応答を必ず実行
+      await message.reply(`【URLディープクロール要約】\n${summary.slice(0, 1500)}`);
+      // URL要約後も通常AI応答を必ず実行（プロンプトにsummaryを含める）
       const flags = detectFlags(message, client) || {};
       (flags as any).recentUrlSummary = summary;
       const action = pickAction(flags);
       if (action) await runPipeline(action, { message, flags, supabase });
     } catch (e) {
-      await message.reply('URL要約中にエラーが発生しました。');
-      console.error('[URL要約エラー]', e);
+      await message.reply('URLディープクロール中にエラーが発生しました。');
+      console.error('[URLディープクロールエラー]', e);
     }
     return;
   }
