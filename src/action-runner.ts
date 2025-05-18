@@ -739,19 +739,8 @@ function appendDateAndImpactWordsIfNeeded(userPrompt: string, query: string): st
 // ---- 新: ChatGPT風・自然なWeb検索体験 ----
 async function enhancedSearch(userPrompt: string, message: Message, affinity: number, supabase: SupabaseClient): Promise<{ answer: string, results: any[] }> {
   console.debug('[enhancedSearch] 入力:', { userPrompt, affinity });
-  let queries: string[] = [];
-  for (let i = 0; i < 3; i++) {
-    let q = await llmRespond(
-      userPrompt,
-      queryGenSystemPrompt + `\n【バリエーション${i+1}】できるだけ異なる切り口で。`,
-      message,
-      [],
-      buildCharacterPrompt(message, affinity),
-      0 // クエリ生成も事実厳守
-    );
-    q = appendDateAndImpactWordsIfNeeded(userPrompt, q);
-    if (q && !queries.includes(q)) queries.push(q);
-  }
+  // --- 検索クエリはユーザー原文そのまま ---
+  const queries: string[] = [userPrompt.trim()];
   console.debug('[enhancedSearch] 検索クエリ:', queries);
   if (queries.length === 0) {
     console.warn('[enhancedSearch] クエリ生成に失敗。空配列を返します');
