@@ -182,6 +182,7 @@ function extractUrls(text: string): string[] {
 }
 
 client.on("messageCreate", async (message) => {
+  console.log('[DEBUG] message.content:', message.content);
   const isBot = message.author.bot;
   const isHuman = !isBot;
   const botId = message.author.id;
@@ -245,7 +246,8 @@ client.on("messageCreate", async (message) => {
 
   // --- 検索ニーズがある場合（例: "教えて", "特徴", "検索" など） ---
   const searchKeywords = ["教えて", "特徴", "検索", "調べて", "とは", "まとめ", "要約", "解説"];
-  if (searchKeywords.some(k => message.content.includes(k))) {
+  const searchPattern = new RegExp(searchKeywords.join('|'));
+  if (searchPattern.test(message.content)) {
     console.log('[DEBUG] 検索キーワード分岐に到達:', message.content);
     console.log('[DEBUG] GOOGLE_API_KEY:', process.env.GOOGLE_API_KEY ? 'set' : 'unset');
     console.log('[DEBUG] GOOGLE_CSE_ID:', process.env.GOOGLE_CSE_ID ? 'set' : 'unset');
