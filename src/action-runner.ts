@@ -27,6 +27,8 @@ import {
   CRAWL_API_MAX_CALLS_PER_USER_PER_DAY,
   CRAWL_CACHE_TTL_MINUTES
 } from './config/rules.js';
+import { Readability } from '@mozilla/readability';
+import { JSDOM } from 'jsdom';
 
 // --- クロールAPI利用回数管理 ---
 const userCrawlCount = new Map(); // userId: { date: string, count: number }
@@ -513,43 +515,68 @@ export async function buildHistoryContext(
 export async function fetchPageContent(url: string): Promise<string> {
   let content = '';
   let errorMsg = '';
-  // 1. puppeteerで動的レンダリング
+  // 1. puppeteerで動的レンダリング＋readability
   try {
     const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    content = await page.evaluate(() => {
-      const main = document.querySelector('main')?.innerText || '';
-      const article = document.querySelector('article')?.innerText || '';
-      const body = document.body.innerText || '';
-      return main || article || body;
-    });
+    const html = await page.content();
     await browser.close();
-    if (content && content.replace(/\s/g, '').length > 50) return content;
+    const dom = new JSDOM(html, { url });
+    const reader = new Readability(dom.window.document);
+    const article = reader.parse();
+    if (article && article.textContent && article.textContent.replace(/\s/g, '').length > 100) {
+      return article.textContent.trim();
+    }
+    // 補助: main/article/body/p/meta/og/h1/h2
+    const $ = load(html);
+    let text = [
+      $('meta[property="og:description"]').attr('content') || '',
+      $('meta[name="description"]').attr('content') || '',
+      $('h1').first().text() || '',
+      $('h2').first().text() || '',
+      $('main').text() || '',
+      $('article').text() || '',
+      $('section').text() || '',
+      $('body').text() || '',
+      $('p').map((_i, el) => $(el).text()).get().join('\n')
+    ].filter(Boolean).join('\n');
+    if (text.replace(/\s/g, '').length > 100) return text.trim();
   } catch (e) {
-    let errorMsg = '[puppeteer失敗]';
+    errorMsg += '[puppeteer/readability失敗]';
     if (typeof e === 'object' && e && 'message' in e) errorMsg += `: ${(e as any).message}`;
     errorMsg += '\n';
   }
-  // 2. fetch+cheerioで静的HTML抽出
+  // 2. fetch+cheerio+readabilityで静的HTML抽出
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000);
   try {
     const res = await fetch(url, { signal: controller.signal });
     const html = await res.text();
-    const $ = load(html);
-    const title = $('title').text();
-    const metaDesc = $('meta[name=description]').attr('content') || '';
-    const mainText = $('main').text() + $('article').text() + $('section').text();
-    const ps = $('p').map((_i, el) => $(el).text()).get().join('\n');
-    let text = [title, metaDesc, mainText, ps].filter(Boolean).join('\n');
-    if (text.replace(/\s/g, '').length < 50) {
-      errorMsg += '[cheerio抽出も短すぎ]';
-      return errorMsg || '';
+    const dom = new JSDOM(html, { url });
+    const reader = new Readability(dom.window.document);
+    const article = reader.parse();
+    if (article && article.textContent && article.textContent.replace(/\s/g, '').length > 100) {
+      return article.textContent.trim();
     }
-    return text.trim();
+    // 補助: main/article/body/p/meta/og/h1/h2
+    const $ = load(html);
+    let text = [
+      $('meta[property="og:description"]').attr('content') || '',
+      $('meta[name="description"]').attr('content') || '',
+      $('h1').first().text() || '',
+      $('h2').first().text() || '',
+      $('main').text() || '',
+      $('article').text() || '',
+      $('section').text() || '',
+      $('body').text() || '',
+      $('p').map((_i, el) => $(el).text()).get().join('\n')
+    ].filter(Boolean).join('\n');
+    if (text.replace(/\s/g, '').length > 100) return text.trim();
+    errorMsg += '[cheerio/readabilityも短すぎ]';
+    return errorMsg || '';
   } catch (e) {
-    let errorMsg = '[fetch/cheerio失敗]';
+    errorMsg += '[fetch/cheerio失敗]';
     if (typeof e === 'object' && e && 'message' in e) errorMsg += `: ${(e as any).message}`;
     return errorMsg || '';
   } finally {

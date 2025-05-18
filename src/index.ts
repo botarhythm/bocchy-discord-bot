@@ -224,7 +224,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- URLが含まれる場合は必ずクロール・要約・AI応答（Web内容のみ根拠） ---
+  // --- URLが含まれていれば即時要約・記憶 ---
   if (urls.length > 0) {
     try {
       await message.reply('URLをディープクロール中です…');
@@ -234,12 +234,17 @@ client.on("messageCreate", async (message) => {
         return;
       }
       const main = results[0];
-      // 主要要素全連結・ノイズ/短文判定
-      if (!main.content || main.content.replace(/\s/g, '').length < 100) {
+      // --- 本文品質チェック ---
+      const content = main.content || '';
+      const MIN_LEN = 100;
+      const NG_PATTERNS = [/cookie/i, /利用規約/, /This site uses cookies/i, /javascript/i, /function\s*\(/i];
+      const KEYWORDS = [/コーヒー/, /焙煎/, /千倉町/, /豆/, /coffee/i, /roast/i, /chikura/i];
+      if (!content || content.replace(/\s/g, '').length < MIN_LEN || NG_PATTERNS.some(r=>r.test(content)) || !KEYWORDS.some(r=>r.test(content))) {
         await message.reply('URLの内容が取得できませんでした。');
         return;
       }
-      const summarized = await summarizeWebPage(main.content);
+      // --- ここで必ず要約を生成 ---
+      const summarized = await summarizeWebPage(content);
       if (!summarized || /取得できません|エラー|not found|failed|unavailable/i.test(summarized)) {
         await message.reply('URLの内容が取得できませんでした。');
         return;
@@ -253,11 +258,11 @@ client.on("messageCreate", async (message) => {
       (flags as any).url = urls[0];
       const action = pickAction(flags);
       if (action) await runPipeline(action, { message, flags, supabase });
-    } catch (e) {
-      await message.reply('URLディープクロール中にエラーが発生しました。');
-      console.error('[URLディープクロールエラー]', e);
+      return;
+    } catch (err) {
+      await message.reply('URLのクロール・要約中にエラーが発生しました。');
+      return;
     }
-    return;
   }
 
   // --- 人間の発言には必ず応答（BOT_CHAT_CHANNEL含む） ---
