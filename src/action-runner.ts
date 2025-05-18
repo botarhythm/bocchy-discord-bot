@@ -739,11 +739,11 @@ function appendDateAndImpactWordsIfNeeded(userPrompt: string, query: string): st
 // ---- 新: ChatGPT風・自然なWeb検索体験 ----
 async function enhancedSearch(userPrompt: string, message: Message, affinity: number, supabase: SupabaseClient): Promise<{ answer: string, results: any[] }> {
   console.debug('[enhancedSearch] 入力:', { userPrompt, affinity });
-  // --- 検索クエリはユーザー原文そのまま ---
+  const useMarkdown = bocchyConfig.output_preferences?.format === 'markdown';
+  // 検索クエリはユーザー原文そのまま
   const queries: string[] = [userPrompt.trim()];
   console.debug('[enhancedSearch] 検索クエリ:', queries);
   if (queries.length === 0) {
-    console.warn('[enhancedSearch] クエリ生成に失敗。空配列を返します');
     return { answer: '検索クエリ生成に失敗しました。', results: [] };
   }
   let allResults = [];
@@ -751,10 +751,7 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
   let seenDomains = new Set();
   for (const query of queries) {
     let results = await googleSearch(query);
-    console.debug('[enhancedSearch] googleSearch結果:', results);
-    if (!results || results.length === 0) {
-      console.warn(`[enhancedSearch] googleSearchが空配列を返却。クエリ: ${query}`);
-    }
+    if (!results || results.length === 0) continue;
     for (const r of results) {
       const domain = r.link.match(/^https?:\/\/(.*?)(\/|$)/)?.[1] || '';
       if (!seenLinks.has(r.link) && !seenDomains.has(domain)) {
@@ -766,79 +763,25 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
     }
     if (allResults.length >= MAX_ARTICLES) break;
   }
+  // --- 検索結果0件 ---
   if (allResults.length === 0) {
-    console.warn('[enhancedSearch] すべてのgoogleSearch結果が空。Web検索結果なしでフォールバックします');
+    return { answer: '検索結果が見つかりませんでした。キーワードや表記を変えて再度お試しください。', results: [] };
   }
-  // 3) ページ取得＆テキスト抽出 or スニペット利用
-  let pageContents = await Promise.all(
-    allResults.map(async r => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
-        try {
-          const res = await fetch(r.link, { signal: controller.signal });
-          const html = await res.text();
-          const $ = load(html);
-          let text = $('p').slice(0,5).map((i,el) => $(el).text()).get().join('\n');
-          if (!text.trim()) text = r.snippet || '';
-          return { title: r.title, text, link: r.link, snippet: r.snippet };
-        } finally {
-          clearTimeout(timeoutId);
-        }
-      } catch {
-        return { title: r.title, text: r.snippet || '', link: r.link, snippet: r.snippet };
-      }
-    })
-  );
-  console.debug('[enhancedSearch] ページ内容抽出結果:', pageContents);
-  // 4) LLMで関連度判定し、低いものは除外（temperature:0.3に緩和）
-  const relPrompt = (query: string, title: string, snippet: string) =>
-    `ユーザーの質問:「${query}」\n検索結果タイトル:「${title}」\nスニペット:「${snippet}」\nこの検索結果は質問に少しでも関係していますか？迷った場合や部分的にでも関係があれば「はい」とだけ返答してください。`;
-  const relChecks = await Promise.all(
-    pageContents.map(async pg => {
-      try {
-        const rel = await llmRespond(userPrompt, relPrompt(userPrompt, pg.title, pg.snippet), null, [], null, 0.3);
-        console.debug('[enhancedSearch] 関連度判定応答:', rel, 'title:', pg.title);
-        return rel.toLowerCase().includes('はい');
-      } catch (e) {
-        console.debug('[enhancedSearch] 関連度判定例外:', e, 'title:', pg.title);
-        return false;
-      }
-    })
-  );
-  pageContents = pageContents.filter((pg, i) => relChecks[i]);
-  // --- 追加: 関連度判定で全て除外された場合は最初の1件を必ず残す ---
-  if (pageContents.length === 0 && allResults.length > 0) {
-    // 検索意図に合致しなくても、ヒットした記事を必ず紹介
-    const topResults = allResults.slice(0, 3);
-    let intro = `ご質問の意図に合致する情報は見つかりませんでしたが、検索でヒットした記事をご紹介します。\n`;
-    topResults.forEach((r, idx) => {
-      intro += `\n${idx+1}. タイトル: ${r.title}\nスニペット: ${r.snippet}\nURL: ${r.link}\n`;
-    });
-    let prompt = `${intro}\n\nこれらの記事の内容を簡単に要約し、どんな情報が得られるかを説明してください。`;
-    // LLMで要約
-    const llmAnswer = await llmRespond(userPrompt, prompt, message, [], buildCharacterPrompt(message, affinity));
-    // 応答冒頭に必ず記事リストを強制挿入
-    return { answer: intro + '\n' + llmAnswer, results: topResults };
+  // --- 検索結果1件以上 ---
+  const topResults = allResults.slice(0, 3);
+  let intro = `検索でヒットした記事をご紹介します。\n`;
+  topResults.forEach((r, idx) => {
+    intro += `\n${idx+1}. タイトル: ${r.title}\nスニペット: ${r.snippet}\nURL: ${r.link}\n`;
+  });
+  if (useMarkdown) intro += '\n\n【出力形式】Markdownで見やすくまとめてください。';
+  let prompt = `${intro}\n\nこれらの記事の内容を簡単に要約し、どんな情報が得られるかを説明してください。`;
+  let llmAnswer = '';
+  try {
+    llmAnswer = await llmRespond(userPrompt, prompt, message, [], buildCharacterPrompt(message, affinity));
+  } catch (e) {
+    llmAnswer = '記事要約中にエラーが発生しました。記事リストのみご参照ください。';
   }
-  // 比較・矛盾指摘プロンプト
-  const docs = pageContents.map((pg,i) => `【${i+1}】${pg.title}\n${pg.text}\nURL: ${pg.link}`).join('\n\n');
-  const urlList = pageContents.map((pg,i) => `【${i+1}】${pg.title}\n${pg.link}`).join('\n');
-  let systemPrompt =
-    `あなたはWeb検索アシスタントです。以下の検索結果を比較し、共通点・矛盾点・重要な違いがあれば明示してください。` +
-    `ユーザーの質問「${userPrompt}」に日本語で分かりやすく回答してください。` +
-    (useMarkdown ? '\n\n【出力形式】\n- 箇条書きや表を活用し、Markdownで見やすくまとめてください。\n- 参考URLは[1]や【1】のように文中で引用してください。' : '') +
-    `\n\n【検索結果要約】\n${docs}\n\n【参考URLリスト】\n${urlList}\n\n` +
-    `・信頼できる情報源を優先し、事実ベースで簡潔にまとめてください。\n・必要に応じて参考URLを文中で引用してください。`;
-  console.debug('[enhancedSearch] LLM要約プロンプト:', systemPrompt);
-  let answer = await llmRespond(userPrompt, systemPrompt, message, [], buildCharacterPrompt(message, affinity));
-  console.debug('[enhancedSearch] LLM応答:', answer);
-  // --- 修正: 関連度が2件以上ある場合のみ出典URLを付与 ---
-  if (pageContents.length >= 2) {
-    answer += (useMarkdown ? `\n\n**【出典URL】**\n` : '\n\n【出典URL】\n') + pageContents.map((pg,i) => `【${i+1}】${pg.link}`).join('\n');
-  }
-  if (supabase) await saveHistory(supabase, message, `[検索クエリ] ${queries[0]}`, docs, affinity);
-  return { answer, results: pageContents };
+  return { answer: intro + '\n' + llmAnswer, results: topResults };
 }
 
 // --- saveHistory: 履歴保存の簡易実装 ---
