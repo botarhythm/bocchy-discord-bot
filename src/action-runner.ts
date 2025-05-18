@@ -802,13 +802,14 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
     })
   );
   console.debug('[enhancedSearch] ページ内容抽出結果:', pageContents);
-  // 4) LLMで関連度判定し、低いものは除外（temperature:0）
+  // 4) LLMで関連度判定し、低いものは除外（temperature:0.3に緩和）
   const relPrompt = (query: string, title: string, snippet: string) =>
-    `ユーザーの質問:「${query}」\n検索結果タイトル:「${title}」\nスニペット:「${snippet}」\nこの検索結果は質問に直接関係していますか？関係が深い場合は「はい」、そうでなければ「いいえ」とだけ返答してください。`;
+    `ユーザーの質問:「${query}」\n検索結果タイトル:「${title}」\nスニペット:「${snippet}」\nこの検索結果は質問に少しでも関係していますか？迷った場合や部分的にでも関係があれば「はい」とだけ返答してください。`;
   const relChecks = await Promise.all(
     pageContents.map(async pg => {
-      const rel = await llmRespond(userPrompt, relPrompt(userPrompt, pg.title, pg.snippet), null, [], null, 0);
-      return rel.trim().startsWith('はい');
+      const rel = await llmRespond(userPrompt, relPrompt(userPrompt, pg.title, pg.snippet), null, [], null, 0.3);
+      console.debug('[enhancedSearch] 関連度判定応答:', rel, 'title:', pg.title);
+      return rel.toLowerCase().includes('はい');
     })
   );
   pageContents = pageContents.filter((pg, i) => relChecks[i]);
