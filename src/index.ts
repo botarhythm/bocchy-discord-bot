@@ -246,13 +246,19 @@ client.on("messageCreate", async (message) => {
   // --- 検索ニーズがある場合（例: "教えて", "特徴", "検索" など） ---
   const searchKeywords = ["教えて", "特徴", "検索", "調べて", "とは", "まとめ", "要約", "解説"];
   if (searchKeywords.some(k => message.content.includes(k))) {
+    console.log('[DEBUG] 検索キーワード分岐に到達:', message.content);
+    console.log('[DEBUG] GOOGLE_API_KEY:', process.env.GOOGLE_API_KEY ? 'set' : 'unset');
+    console.log('[DEBUG] GOOGLE_CSE_ID:', process.env.GOOGLE_CSE_ID ? 'set' : 'unset');
     let searchError = null;
-    let searchResults: { answer: string, results: any[] } | null = null;
+    let searchResults = null;
     try {
       await message.reply('Google検索中です…');
+      console.log('[DEBUG] enhancedSearch呼び出し:', message.content);
       searchResults = await enhancedSearch(message.content, message, 0, supabase);
+      console.log('[DEBUG] enhancedSearch結果:', searchResults);
     } catch (e) {
       searchError = e instanceof Error ? e.message : String(e);
+      console.error('[DEBUG] enhancedSearchエラー:', e);
     }
     if (!searchResults || !searchResults.results || !searchResults.results.length) {
       await message.reply(`Google検索失敗: ${searchError || '検索結果が取得できませんでした。'}`);
