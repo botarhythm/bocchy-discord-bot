@@ -803,8 +803,13 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
     });
     // 4. 主語明示型プロンプト生成
     const prompt = buildPrompt(branch);
+    // --- recentUrlSummaryがあればsystemPromptに必ず挿入 ---
+    let systemPrompt = '';
+    if (flags && flags.recentUrlSummary) {
+      systemPrompt += `【重要】以下のURL内容を必ず参照し、事実に基づいて答えてください。創作や推測は禁止です。\n----\n${flags.recentUrlSummary}\n----\n`;
+    }
     // 5. LLM応答生成
-    const answer = await llmRespond(message.content, prompt, message);
+    const answer = await llmRespond(message.content, systemPrompt + prompt, message);
     await message.reply(answer);
     if (supabase) await updateAffinity(userId, guildId, message.content);
     if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
