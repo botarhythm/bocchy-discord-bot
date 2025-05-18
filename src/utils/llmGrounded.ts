@@ -2,26 +2,79 @@ import crypto from 'crypto';
 import { openai } from '../services/openai.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
+// --- crawlツール定義 ---
+export const crawlTool = {
+  type: 'function',
+  function: {
+    name: 'crawl',
+    description: '指定URLのWebページ本文を抽出する',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'クロール対象のURL' },
+        timestamp: { type: 'string', description: 'クロール時刻（ISO8601）' }
+      },
+      required: ['url', 'timestamp']
+    }
+  }
+};
+
+// --- summarizeツール定義 ---
+export const summarizeTool = {
+  type: 'function',
+  function: {
+    name: 'summarize',
+    description: 'Webページ本文から要約を生成する',
+    parameters: {
+      type: 'object',
+      properties: {
+        page_content: { type: 'string', description: 'Webページ本文' },
+        lang: { type: 'string', description: '要約言語（ja等）' }
+      },
+      required: ['page_content', 'lang']
+    }
+  }
+};
+
 /**
- * Strict Web Grounding型LLM要約ラッパー
- * @param webContent Webページ本文
- * @param userPrompt ユーザー指示（例:「この内容を日本語で要約してください。特徴やポイントを箇条書きで。事実のみ。」）
- * @returns LLM応答
+ * Strict Web Grounding型LLM要約ラッパー（二段階: crawl→summarize）
+ * @param url 対象URL
+ * @returns LLM応答（JSON: { summary: string, grounding_ok: boolean }）
  */
-export async function llmGroundedSummarize(webContent: string, userPrompt: string): Promise<string> {
-  if (!webContent || webContent.length < 50) return '情報取得不可';
-  const hash = crypto.createHash('sha256').update(webContent).digest('hex');
-  const systemPrompt = `You must answer *exclusively* from the provided web-content. If the answer is not present, reply "情報取得不可".\nPage hash: ${hash}\n<BEGIN_PAGE>\n${webContent}\n<END_PAGE>`;
-  const messages: ChatCompletionMessageParam[] = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userPrompt }
-  ];
-  // OpenAI function-calling API模倣（tool use/temperature:0/top_p:0.1固定）
-  const res = await openai.chat.completions.create({
-    model: 'gpt-4.1-nano-2025-04-14',
-    messages,
-    temperature: 0,
-    top_p: 0.1
+export async function strictWebGroundedSummarize(url: string): Promise<{ summary: string, grounding_ok: boolean }> {
+  // --- step-1: crawl（function calling強制） ---
+  const crawlRes = await openai.chat.completions.create({
+    model: 'gpt-4o-mini-2024-07-18',
+    tools: [crawlTool],
+    tool_choice: { type: 'function', function: { name: 'crawl' } },
+    messages: [
+      { role: 'user', content: url }
+    ],
+    temperature: 0
   });
-  return res.choices?.[0]?.message?.content?.trim() || '情報取得不可';
+  const crawlCall = crawlRes.choices?.[0]?.message?.tool_calls?.[0];
+  const page = crawlCall?.args?.text || '';
+  if (!page || page.length < 50) {
+    return { summary: '情報取得不可', grounding_ok: false };
+  }
+  // --- step-2: summarize（JSON mode＋function calling強制） ---
+  const sumRes = await openai.chat.completions.create({
+    model: 'gpt-4o-mini-2024-07-18',
+    response_format: { type: 'json_object' },
+    tools: [summarizeTool],
+    tool_choice: { type: 'function', function: { name: 'summarize' } },
+    messages: [
+      { role: 'system', content: 'Summarize ONLY from "page_content". If missing, return {"summary":"情報取得不可","grounding_ok":false}.' },
+      { role: 'user', content: JSON.stringify({ page_content: page, lang: 'ja' }) }
+    ],
+    temperature: 0
+  });
+  let summary = '情報取得不可';
+  let grounding_ok = false;
+  try {
+    const json = JSON.parse(sumRes.choices?.[0]?.message?.content || '{}');
+    summary = json.summary || '情報取得不可';
+    grounding_ok = !!json.grounding_ok;
+  } catch {}
+  return { summary, grounding_ok };
 } 

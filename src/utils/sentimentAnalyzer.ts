@@ -10,11 +10,13 @@ export async function getSentiment(text: string): Promise<'positive' | 'neutral'
   const systemPrompt = '以下のテキストの感情を「positive」「negative」「neutral」のいずれかで判定し、1語で返してください。';
   try {
     const res = await openai.chat.completions.create({
-      model: 'gpt-4.1-nano-2025-04-14',
+      model: 'gpt-4o-mini-2024-07-18',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: text }
-      ]
+      ],
+      max_tokens: 128,
+      temperature: 0.0
     });
     const label = res.choices[0]?.message?.content?.trim().toLowerCase() || 'neutral';
     if (label === 'positive' || label === 'neutral' || label === 'negative') {

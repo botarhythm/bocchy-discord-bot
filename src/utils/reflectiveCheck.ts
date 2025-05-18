@@ -14,7 +14,7 @@ export async function reflectiveCheck(userPrompt: string, botReply: string): Pro
     { role: 'user', content: `ユーザー: ${userPrompt}\nボット: ${botReply}` }
   ];
   const res = await queuedOpenAI(() => openai.chat.completions.create({
-    model: 'gpt-4.1-nano-2025-04-14',
+    model: 'gpt-4o-mini-2024-07-18',
     messages,
   }));
   const content = res.choices[0]?.message?.content?.trim() || '';
