@@ -224,6 +224,42 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
+  // --- URLが含まれる場合は必ずクロール・要約・AI応答（Web内容のみ根拠） ---
+  if (urls.length > 0) {
+    try {
+      await message.reply('URLをディープクロール中です…');
+      const results = await deepCrawl(urls[0], userId, isAdmin);
+      if (!results.length) {
+        await message.reply('URLのクロール結果が取得できませんでした。');
+        return;
+      }
+      const main = results[0];
+      // 主要要素全連結・ノイズ/短文判定
+      if (!main.content || main.content.replace(/\s/g, '').length < 100) {
+        await message.reply('URLの内容が取得できませんでした。');
+        return;
+      }
+      const summarized = await summarizeWebPage(main.content);
+      if (!summarized || /取得できません|エラー|not found|failed|unavailable/i.test(summarized)) {
+        await message.reply('URLの内容が取得できませんでした。');
+        return;
+      }
+      recentUrlMap.set(channelId, { url: urls[0], summary: summarized, timestamp: Date.now() });
+      await message.reply(`【URLディープクロール要約】\n${summarized.slice(0, 1500)}`);
+      // URL要約後も通常AI応答を必ず実行（プロンプトにsummaryを含める）
+      const flags = detectFlags(message, client) || {};
+      (flags as any).recentUrlSummary = summarized;
+      (flags as any).forceUrlSummaryMode = true;
+      (flags as any).url = urls[0];
+      const action = pickAction(flags);
+      if (action) await runPipeline(action, { message, flags, supabase });
+    } catch (e) {
+      await message.reply('URLディープクロール中にエラーが発生しました。');
+      console.error('[URLディープクロールエラー]', e);
+    }
+    return;
+  }
+
   // --- 人間の発言には必ず応答（BOT_CHAT_CHANNEL含む） ---
   if (isHuman) {
     const flags = detectFlags(message, client);
@@ -275,43 +311,6 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- URLが含まれていれば即時要約・記憶 ---
-  if (urls.length > 0) {
-    try {
-      await message.reply('URLをディープクロール中です…');
-      const results = await deepCrawl(urls[0], userId, isAdmin);
-      if (!results.length) {
-        await message.reply('URLのクロール結果が取得できませんでした。');
-        return;
-      }
-      const main = results[0];
-      // 主要リンク抽出
-      let summary = `【${main.url}】\n---\n${main.content.slice(0, 500)}...\n---\n`;
-      if (main.links && main.links.length) {
-        summary += `\n【このページの主要リンク】\n` + main.links.map((l: string, i: number) => `・${l}`).join('\n');
-      }
-      // --- ここで必ず要約を生成 ---
-      const summarized = await summarizeWebPage(main.content);
-      if (!summarized || /取得できません|エラー|not found|failed|unavailable/i.test(summarized)) {
-        await message.reply('URLの内容が取得できませんでした。');
-        return;
-      }
-      recentUrlMap.set(channelId, { url: urls[0], summary: summarized, timestamp: Date.now() });
-      await message.reply(`【URLディープクロール要約】\n${summarized.slice(0, 1500)}`);
-      // URL要約後も通常AI応答を必ず実行（プロンプトにsummaryを含める）
-      const flags = detectFlags(message, client) || {};
-      (flags as any).recentUrlSummary = summarized;
-      (flags as any).forceUrlSummaryMode = true;
-      (flags as any).url = urls[0];
-      const action = pickAction(flags);
-      if (action) await runPipeline(action, { message, flags, supabase });
-    } catch (e) {
-      await message.reply('URLディープクロール中にエラーが発生しました。');
-      console.error('[URLディープクロールエラー]', e);
-    }
-    return;
-  }
-
   // --- URLが含まれていない場合、直近URLを文脈として参照 ---
   const recent = recentUrlMap.get(channelId);
   if (recent && Date.now() - recent.timestamp < 10 * 60 * 1000) { // 10分以内
@@ -324,11 +323,16 @@ client.on("messageCreate", async (message) => {
           return;
         }
         const main = results[0];
-        let reply = `【${main.url}】\n---\n${main.content.slice(0, 500)}...\n---\n`;
-        if (main.links && main.links.length) {
-          reply += `\n【このページの主要リンク】\n` + main.links.map((l: string, i: number) => `・${l}`).join('\n');
+        if (!main.content || main.content.replace(/\s/g, '').length < 100) {
+          await message.reply('直近URLの内容が取得できませんでした。');
+          return;
         }
-        await message.reply(reply.slice(0, 1800));
+        const summarized = await summarizeWebPage(main.content);
+        if (!summarized || /取得できません|エラー|not found|failed|unavailable/i.test(summarized)) {
+          await message.reply('直近URLの内容が取得できませんでした。');
+          return;
+        }
+        await message.reply(`【直近URL再要約】\n${summarized.slice(0, 1500)}`);
       } catch (e) {
         await message.reply('直近URLの再チェック中にエラーが発生しました。');
         console.error('[recentUrl再チェックエラー]', e);
