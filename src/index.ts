@@ -5,7 +5,7 @@ import { openai } from './services/openai.js';
 import { supabase } from './services/supabase.js';
 import { detectFlags } from "./flag-detector.js";
 import { pickAction } from "./decision-engine.js";
-import { runPipeline, shouldContextuallyIntervene, buildHistoryContext, getAffinity, buildCharacterPrompt, updateAffinity, saveHistory } from "./action-runner.js";
+import { runPipeline, shouldContextuallyIntervene, buildHistoryContext, getAffinity, buildCharacterPrompt, updateAffinity, saveHistory, deepCrawl, summarizeWebPage } from "./action-runner.js";
 import http from 'http';
 import { BOT_CHAT_CHANNEL, MAX_ACTIVE_TURNS, MAX_BOT_CONVO_TURNS, MAX_DAILY_RESPONSES, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END, EMERGENCY_STOP } from './config/index.js';
 
@@ -173,11 +173,22 @@ function getTodayDate() {
   return new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }).split(' ')[0];
 }
 
+// --- チャンネルごとの直近URL・要約の短期記憶 ---
+const recentUrlMap = new Map(); // channelId => { url: string, summary: string, timestamp: number }
+
+function extractUrls(text) {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  return text.match(urlRegex) || [];
+}
+
 client.on("messageCreate", async (message) => {
   const isBot = message.author.bot;
   const isHuman = !isBot;
   const botId = message.author.id;
   const channelId = message.channel?.id;
+  const userId = message.author.id;
+  const isAdmin = message.member?.permissions?.has('Administrator') || false;
+  const urls = extractUrls(message.content);
 
   // --- DMは常に通常応答 ---
   if (!message.guild) {
@@ -262,6 +273,49 @@ client.on("messageCreate", async (message) => {
     botConvoState.set(botId, state);
     console.log(`[b2b進行] botId=${botId}, turns=${state.turns}, dailyCount=${state.dailyCount}, hour=${hour}`);
     return;
+  }
+
+  // --- URLが含まれていれば即時要約・記憶 ---
+  if (urls.length > 0) {
+    try {
+      await message.reply('URLを要約中です…');
+      const content = await fetchPageContent(urls[0]);
+      const summary = await summarizeWebPage(content, '', message);
+      recentUrlMap.set(channelId, { url: urls[0], summary, timestamp: Date.now() });
+      await message.reply(`【URL要約】\n${summary.slice(0, 1500)}`);
+    } catch (e) {
+      await message.reply('URL要約中にエラーが発生しました。');
+      console.error('[URL要約エラー]', e);
+    }
+    return;
+  }
+
+  // --- URLが含まれていない場合、直近URLを文脈として参照 ---
+  const recent = recentUrlMap.get(channelId);
+  if (recent && Date.now() - recent.timestamp < 10 * 60 * 1000) { // 10分以内
+    if (/続き|詳しく|もっと|解説|再度|もう一度/.test(message.content)) {
+      try {
+        await message.reply('直近のURLを再チェックします…');
+        const results = await deepCrawl(recent.url, userId, isAdmin);
+        if (!results.length) {
+          await message.reply('直近URLの再チェック結果が取得できませんでした。');
+          return;
+        }
+        const main = results[0];
+        let reply = `【${main.url}】\n---\n${main.content.slice(0, 500)}...\n---\n`;
+        if (main.links && main.links.length) {
+          reply += `\n【このページの主要リンク】\n` + main.links.map((l, i) => `・${l}`).join('\n');
+        }
+        await message.reply(reply.slice(0, 1800));
+      } catch (e) {
+        await message.reply('直近URLの再チェック中にエラーが発生しました。');
+        console.error('[recentUrl再チェックエラー]', e);
+      }
+      return;
+    }
+    // 通常のrunPipeline等でもrecent.summaryをプロンプトに含める（例示: flagsにrecentSummaryを追加）
+    message.flags = message.flags || {};
+    message.flags.recentUrlSummary = recent.summary;
   }
 
   // --- それ以外のメッセージは無視 ---

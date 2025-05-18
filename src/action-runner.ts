@@ -20,6 +20,65 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { LRUCache } from 'lru-cache';
 import { SubjectTracker, extractSubjectCandidates, createBranchNode, buildPrompt } from './utils/index.js';
+import path from 'path';
+const rules = require(path.resolve('config/rules.js'));
+
+// --- クロールAPI利用回数管理 ---
+const userCrawlCount = new Map(); // userId: { date: string, count: number }
+const crawlCache = new LRUCache<string, any>({ max: 256, ttl: 1000 * 60 * (rules.CRAWL_CACHE_TTL_MINUTES || 10) });
+
+function getCrawlLimit(userId: string, isAdmin: boolean) {
+  return {
+    maxDepth: isAdmin ? rules.CRAWL_MAX_DEPTH.admin : rules.CRAWL_MAX_DEPTH.user,
+    maxLinks: isAdmin ? rules.CRAWL_MAX_LINKS_PER_PAGE.admin : rules.CRAWL_MAX_LINKS_PER_PAGE.user,
+    maxCalls: isAdmin ? rules.CRAWL_API_MAX_CALLS_PER_REQUEST.admin : rules.CRAWL_API_MAX_CALLS_PER_REQUEST.user,
+    maxPerDay: isAdmin ? rules.CRAWL_API_MAX_CALLS_PER_USER_PER_DAY.admin : rules.CRAWL_API_MAX_CALLS_PER_USER_PER_DAY.user,
+  };
+}
+
+function canCrawl(userId: string, isAdmin: boolean) {
+  const today = new Date().toLocaleDateString('ja-JP');
+  const rec = userCrawlCount.get(userId) || { date: today, count: 0 };
+  if (rec.date !== today) {
+    rec.date = today;
+    rec.count = 0;
+  }
+  const { maxPerDay } = getCrawlLimit(userId, isAdmin);
+  if (rec.count >= maxPerDay) return false;
+  rec.count++;
+  userCrawlCount.set(userId, rec);
+  return true;
+}
+
+/**
+ * 深掘りクロール（階層・リンク数・API回数・キャッシュ制限付き）
+ */
+export async function deepCrawl(url: string, userId: string, isAdmin: boolean, depth = 0, callCount = { v: 0 }, visited = new Set()): Promise<any[]> {
+  const { maxDepth, maxLinks, maxCalls } = getCrawlLimit(userId, isAdmin);
+  if (depth > maxDepth || callCount.v > maxCalls) return [];
+  const cacheKey = `${url}|${depth}`;
+  if (crawlCache.has(cacheKey)) return crawlCache.get(cacheKey);
+  if (visited.has(url)) return [];
+  visited.add(url);
+  callCount.v++;
+  let content = await fetchPageContent(url);
+  let links: string[] = [];
+  try {
+    // cheerioでaタグ抽出
+    const $ = load(content);
+    links = $('a').map((_i, el) => $(el).attr('href')).get()
+      .filter((href: string) => href && /^https?:\/\//.test(href))
+      .slice(0, maxLinks);
+  } catch {}
+  const result = [{ url, content, links }];
+  for (const link of links) {
+    if (depth + 1 > maxDepth || callCount.v > maxCalls) break;
+    const sub = await deepCrawl(link, userId, isAdmin, depth + 1, callCount, visited);
+    result.push(...sub);
+  }
+  crawlCache.set(cacheKey, result);
+  return result;
+}
 
 // --- 型定義 ---
 export interface UserProfile {
