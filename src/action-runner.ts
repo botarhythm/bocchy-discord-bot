@@ -144,7 +144,7 @@ async function extractEntitiesLLM(text: string): Promise<Record<string, any>> {
   const prompt = `次のテキストから「人名」「組織名」「政策名」「イベント名」「話題」「URL」など重要なエンティティをJSON形式で抽出してください。\nテキスト: ${text}\n出力例: {"persons": ["大谷翔平"], "organizations": ["ムーディーズ"], "policies": ["財政赤字"], "events": ["米国債格下げ"], "topics": ["米国経済"], "urls": ["https://..."]}`;
   try {
     const res = await await queuedOpenAI(() => openai.chat.completions.create({
-      model: 'gpt-4o-mini-2024-07-18',
+      model: 'gpt-4.1-nano-2025-04-14',
       messages: [
         { role: "system", content: "あなたはエンティティ抽出AIです。" },
         { role: "user", content: prompt }
@@ -414,7 +414,7 @@ export async function buildHistoryContext(
     const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const prompt = `以下は直近の会話履歴です。このやりとり全体から「会話の流れ要約」「未解決の問い」「ユーザーの期待」「感情トーン」を日本語で簡潔に抽出し、JSONで出力してください。\n---\n${conversationText}\n---\n出力例: {\"topic\":\"...\",\"unresolved\":\"...\",\"expectation\":\"...\",\"tone\":\"...\"}`;
     const res = await await queuedOpenAI(() => openai.chat.completions.create({
-      model: 'gpt-4o-mini-2024-07-18',
+      model: 'gpt-4.1-nano-2025-04-14',
       messages: [
         { role: 'system', content: 'あなたは会話要約AIです。' },
         { role: 'user', content: prompt }
@@ -442,7 +442,7 @@ export async function buildHistoryContext(
     const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const metaPrompt = `以下の会話履歴から「現在の話題」「直前の課題」「技術的文脈や会話の一貫性」を日本語で簡潔に抽出し、JSONで出力してください。\n---\n${conversationText}\n---\n出力例: {\"currentTopic\":\"...\",\"currentIssue\":\"...\",\"contextMeta\":\"...\"}`;
     const res = await await queuedOpenAI(() => openai.chat.completions.create({
-      model: 'gpt-4o-mini-2024-07-18',
+      model: 'gpt-4.1-nano-2025-04-14',
       messages: [
         { role: 'system', content: 'あなたは会話分脈抽出AIです。' },
         { role: 'user', content: metaPrompt }
@@ -470,7 +470,7 @@ export async function buildHistoryContext(
       const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
       const multiIntentPrompt = `次のユーザー発言から「考えられる複数の意図・期待・関心」を日本語で3つ程度、推論し、JSON配列で出力してください。\n---\n${lastUserMsg}\n---\n出力例: [\"人気の豆を知りたい\", \"産地や焙煎方法に興味がある\", \"おすすめを探している\"]`;
       const res = await await queuedOpenAI(() => openai.chat.completions.create({
-        model: 'gpt-4o-mini-2024-07-18',
+        model: 'gpt-4.1-nano-2025-04-14',
         messages: [
           { role: 'system', content: 'あなたは多角的推論AIです。' },
           { role: 'user', content: multiIntentPrompt }
@@ -514,6 +514,7 @@ export async function buildHistoryContext(
 
 // --- ChatGPT風: Webページクロール＆自然言語要約 ---
 export async function fetchPageContent(url: string): Promise<string> {
+  console.log('[fetchPageContent] クロール対象URL:', url);
   let content = '';
   let errorMsg = '';
   // 1. puppeteerで動的レンダリング＋readability
@@ -527,6 +528,7 @@ export async function fetchPageContent(url: string): Promise<string> {
     const reader = new Readability(dom.window.document);
     const article = reader.parse();
     if (article && article.textContent && article.textContent.replace(/\s/g, '').length > 100) {
+      console.log('[fetchPageContent] puppeteer/readability成功:', article.textContent.slice(0, 200), '...length:', article.textContent.length);
       return article.textContent.trim();
     }
     // 補助: main/article/body/p/meta/og/h1/h2
@@ -542,11 +544,15 @@ export async function fetchPageContent(url: string): Promise<string> {
       $('body').text() || '',
       $('p').map((_i, el) => $(el).text()).get().join('\n')
     ].filter(Boolean).join('\n');
-    if (text.replace(/\s/g, '').length > 100) return text.trim();
+    if (text.replace(/\s/g, '').length > 100) {
+      console.log('[fetchPageContent] puppeteer/cheerio補助成功:', text.slice(0, 200), '...length:', text.length);
+      return text.trim();
+    }
   } catch (e) {
     errorMsg += '[puppeteer/readability失敗]';
     if (typeof e === 'object' && e && 'message' in e) errorMsg += `: ${(e as any).message}`;
     errorMsg += '\n';
+    console.error('[fetchPageContent] puppeteer/readabilityエラー:', e);
   }
   // 2. fetch+cheerio+readabilityで静的HTML抽出
   const controller = new AbortController();
@@ -558,6 +564,7 @@ export async function fetchPageContent(url: string): Promise<string> {
     const reader = new Readability(dom.window.document);
     const article = reader.parse();
     if (article && article.textContent && article.textContent.replace(/\s/g, '').length > 100) {
+      console.log('[fetchPageContent] fetch/readability成功:', article.textContent.slice(0, 200), '...length:', article.textContent.length);
       return article.textContent.trim();
     }
     // 補助: main/article/body/p/meta/og/h1/h2
@@ -573,12 +580,17 @@ export async function fetchPageContent(url: string): Promise<string> {
       $('body').text() || '',
       $('p').map((_i, el) => $(el).text()).get().join('\n')
     ].filter(Boolean).join('\n');
-    if (text.replace(/\s/g, '').length > 100) return text.trim();
+    if (text.replace(/\s/g, '').length > 100) {
+      console.log('[fetchPageContent] fetch/cheerio補助成功:', text.slice(0, 200), '...length:', text.length);
+      return text.trim();
+    }
     errorMsg += '[cheerio/readabilityも短すぎ]';
+    console.warn('[fetchPageContent] fetch/cheerio補助も短すぎ:', text.slice(0, 200), '...length:', text.length);
     return errorMsg || '';
   } catch (e) {
     errorMsg += '[fetch/cheerio失敗]';
     if (typeof e === 'object' && e && 'message' in e) errorMsg += `: ${(e as any).message}`;
+    console.error('[fetchPageContent] fetch/cheerioエラー:', e);
     return errorMsg || '';
   } finally {
     clearTimeout(timeoutId);
@@ -587,11 +599,14 @@ export async function fetchPageContent(url: string): Promise<string> {
 
 // --- ChatGPT風: Webページ内容をLLMで自然言語要約 ---
 export async function summarizeWebPage(url: string): Promise<string> {
+  console.log('[summarizeWebPage] 要約対象URL:', url);
   if (!url || url.length < 8) {
+    console.warn('[summarizeWebPage] URLが無効:', url);
     return 'ページ内容が取得できませんでした。URLが無効か、クロールが制限されている可能性があります。';
   }
   // Strict Web Grounding型で要約（新: 二段階パイプライン）
-  const { summary } = await strictWebGroundedSummarize(url);
+  const summary = await strictWebGroundedSummarize(url);
+  console.log('[summarizeWebPage] 要約結果:', summary);
   return summary;
 }
 
@@ -647,7 +662,7 @@ async function llmRespond(prompt: string, systemPrompt: string = "", message: Me
   ];
   messages.push({ role: "user", content: prompt });
   const completion = await await queuedOpenAI(() => openai.chat.completions.create({
-    model: 'gpt-4o-mini-2024-07-18',
+    model: 'gpt-4.1-nano-2025-04-14',
     messages
   }));
   return completion.choices[0]?.message?.content || "ごめんなさい、うまく答えられませんでした。";
@@ -866,7 +881,7 @@ export async function shouldContextuallyIntervene(history: any[], globalContext:
   try {
     const openai = new (await import('openai')).OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const res = await await queuedOpenAI(() => openai.chat.completions.create({
-      model: 'gpt-4o-mini-2024-07-18',
+      model: 'gpt-4.1-nano-2025-04-14',
       messages: [
         { role: 'system', content: 'あなたは会話介入判定AIです。' },
         { role: 'user', content: prompt }

@@ -355,7 +355,7 @@ client.on("messageCreate", async (message) => {
 async function getExcitementScoreByAI(history: Message[]): Promise<number> {
   const prompt = `\n以下はDiscordチャンネルの直近の会話履歴です。\nこの会話が「どれくらい盛り上がっているか」を1〜10のスコアで評価してください。\n10: 非常に盛り上がっている（多人数・活発・感情的・話題性あり）\n1: ほぼ盛り上がっていない（静か・単調・反応が薄い）\nスコアのみを半角数字で返してください。\n---\n${history.slice(-20).map(m => m.author.username + ": " + m.content).join("\n")}\n---\n`;
   const res = await openai.chat.completions.create({
-    model: 'gpt-4o-mini-2024-07-18',
+    model: 'gpt-4.1-nano-2025-04-14',
     messages: [{ role: "system", content: prompt }]
   });
   const score = parseInt(res.choices[0]?.message?.content?.match(/\d+/)?.[0] || "1", 10);
@@ -372,7 +372,7 @@ function getCooldownMsByAI(score: number): number {
 async function generateInterventionMessage(history: Message[]): Promise<string> {
   const prompt = `\n以下の会話の流れを踏まえ、ボットが自然に会話へ参加する一言を日本語で生成してください。\n---\n${history.slice(-10).map(m => m.author.username + ": " + m.content).join("\n")}\n---\n`;
   const res = await openai.chat.completions.create({
-    model: 'gpt-4o-mini-2024-07-18',
+    model: 'gpt-4.1-nano-2025-04-14',
     messages: [{ role: "system", content: prompt }]
   });
   return res.choices[0]?.message?.content?.trim() || '';
@@ -401,7 +401,7 @@ client.on('interactionCreate', async (interaction: Interaction) => {
   let content = '';
   try {
     const stream = await openai.chat.completions.create({
-      model: 'gpt-4o-mini-2024-07-18',
+      model: 'gpt-4.1-nano-2025-04-14',
       messages: [
         { role: 'system', content: charPrompt },
         ...history,

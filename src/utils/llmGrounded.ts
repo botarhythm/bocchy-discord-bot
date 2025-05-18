@@ -45,9 +45,18 @@ export const summarizeTool = {
  * @returns LLM応答（string）
  */
 export async function strictWebGroundedSummarize(url: string, character: string = ''): Promise<string> {
+  console.log('[Grounding] 要約対象URL:', url);
   // 1. まず必ずWebクロール
-  const pageContent = await fetchPageContent(url);
+  let pageContent: string | null = null;
+  try {
+    pageContent = await fetchPageContent(url);
+    console.log('[Grounding] fetchPageContent結果:', pageContent?.slice(0, 200), '...length:', pageContent?.length);
+  } catch (e) {
+    console.error('[Grounding] fetchPageContentエラー:', e);
+    return '情報取得不可（クロールエラー）';
+  }
   if (!pageContent || pageContent.length < 50) {
+    console.warn('[Grounding] ページ内容が取得できませんでした。');
     return '情報取得不可';
   }
   // 2. 取得できた場合のみLLMに渡す
@@ -56,13 +65,23 @@ export async function strictWebGroundedSummarize(url: string, character: string 
     (character ? ` キャラクター性: ${character}` : '') +
     '\n---\n' + pageContent + '\n---';
   const userPrompt = 'この内容を日本語で要約してください。特徴やポイントを箇条書きで。事実のみ。';
-  const res = await openai.chat.completions.create({
-    model: 'gpt-4o-mini-2024-07-18',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt }
-    ],
-    temperature: 0
-  });
-  return res.choices[0]?.message?.content?.trim() || '情報取得不可';
+  console.log('[Grounding] LLM system prompt:', systemPrompt.slice(0, 500));
+  console.log('[Grounding] LLM user prompt:', userPrompt);
+  try {
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4.1-nano-2025-04-14',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      temperature: 0,
+      max_tokens: 512
+    });
+    const answer = res.choices?.[0]?.message?.content?.trim() || '';
+    console.log('[Grounding] LLM応答:', answer);
+    return answer;
+  } catch (e) {
+    console.error('[Grounding] LLM APIエラー:', e);
+    return '情報取得不可（LLMエラー）';
+  }
 } 

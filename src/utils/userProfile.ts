@@ -18,7 +18,7 @@ export interface UserProfile {
 export async function updateUserProfileSummaryFromHistory(userId: string, history: string[], saveSummary: (userId: string, summary: string) => Promise<void>): Promise<void> {
   const prompt = `以下はユーザーの会話履歴です。ユーザーの特徴や好み、傾向を200字以内で要約してください。\n---\n${history.join('\n')}\n---`;
   const res = await openai.chat.completions.create({
-    model: 'gpt-4o-mini-2024-07-18',
+    model: 'gpt-4.1-nano-2025-04-14',
     messages: [
       { role: 'system', content: prompt }
     ]
