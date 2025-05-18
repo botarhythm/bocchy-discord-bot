@@ -283,6 +283,11 @@ client.on("messageCreate", async (message) => {
       const summary = await summarizeWebPage(content, '', message);
       recentUrlMap.set(channelId, { url: urls[0], summary, timestamp: Date.now() });
       await message.reply(`【URL要約】\n${summary.slice(0, 1500)}`);
+      // URL要約後も通常AI応答を必ず実行
+      const flags = detectFlags(message, client) || {};
+      (flags as any).recentUrlSummary = summary;
+      const action = pickAction(flags);
+      if (action) await runPipeline(action, { message, flags, supabase });
     } catch (e) {
       await message.reply('URL要約中にエラーが発生しました。');
       console.error('[URL要約エラー]', e);
@@ -313,8 +318,11 @@ client.on("messageCreate", async (message) => {
       }
       return;
     }
-    // 通常のrunPipeline等でもrecent.summaryをプロンプトに含める（例示: flagsにrecentSummaryを追加）
-    (message as any).recentUrlSummary = recent.summary;
+    // 通常のrunPipeline等でもrecent.summaryをプロンプトに含める
+    const flags = detectFlags(message, client) || {};
+    (flags as any).recentUrlSummary = recent.summary;
+    const action = pickAction(flags);
+    if (action) await runPipeline(action, { message, flags, supabase });
   }
 
   // --- それ以外のメッセージは無視 ---
