@@ -1,5 +1,5 @@
-import { openai, queuedOpenAI } from '../services/openai';
-import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { openai, queuedOpenAI } from '../services/openai.js';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 export interface GlobalContext {
   tone?: string;

@@ -1,5 +1,5 @@
-import { openai, queuedOpenAI } from '../services/openai';
-import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { openai, queuedOpenAI } from '../services/openai.js';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 /**
  * Bot応答の適切性を自己評価し、必要なら修正版を返す

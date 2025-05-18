@@ -1,5 +1,5 @@
 import { OpenAI } from 'openai';
-import { affinityRepository } from '../services/supabase';
+import { affinityRepository } from '../services/supabase.js';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 

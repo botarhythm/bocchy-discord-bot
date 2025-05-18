@@ -7,18 +7,18 @@ import yaml from 'js-yaml';
 import fs from 'fs';
 import { resolveGuildId } from './utils/archive/resolveGuildId.js';
 import { getAffinity, updateAffinity } from './utils/affinity.js';
-import { getSentiment } from './utils/sentimentAnalyzer';
-import { analyzeGlobalContext } from './utils/analyzeGlobalContext';
-import { reflectiveCheck } from './utils/reflectiveCheck';
-import { logInterventionDecision } from './index';
+import { getSentiment } from './utils/sentimentAnalyzer.js';
+import { analyzeGlobalContext } from './utils/analyzeGlobalContext.js';
+import { reflectiveCheck } from './utils/reflectiveCheck.js';
+import { logInterventionDecision } from './index.js';
 import axios from 'axios';
-import { updateUserProfileSummaryFromHistory } from './utils/userProfile';
+import { updateUserProfileSummaryFromHistory } from './utils/userProfile.js';
 import puppeteer from 'puppeteer';
-import { openai, queuedOpenAI } from './services/openai';
-import { supabase } from './services/supabase';
+import { openai, queuedOpenAI } from './services/openai.js';
+import { supabase } from './services/supabase.js';
 import { Message, Guild, Client, ChatInputCommandInteraction } from 'discord.js';
 import { SupabaseClient } from '@supabase/supabase-js';
-import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { LRUCache } from 'lru-cache';
 
 // --- 型定義 ---

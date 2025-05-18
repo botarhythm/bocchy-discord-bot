@@ -1,4 +1,4 @@
-import { openai } from '../services/openai';
+import { openai } from '../services/openai.js';
 // ユーザープロファイル履歴から要約を生成・更新する関数
 // 必要に応じてDBや外部API連携部分は後で拡張可能な形で実装
 

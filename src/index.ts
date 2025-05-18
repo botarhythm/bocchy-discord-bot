@@ -1,4 +1,5 @@
-import { Client, GatewayIntentBits, Partials, ChannelType, Message, Guild, PartialMessage, TextChannel, Interaction, ChatInputCommandInteraction } from "discord.js";
+import { Client, GatewayIntentBits, Partials, ChannelType, Message, Guild, TextChannel } from "discord.js";
+import type { PartialMessage, Interaction, ChatInputCommandInteraction } from "discord.js";
 import dotenv from "dotenv";
 import { openai } from './services/openai.js';
 import { supabase } from './services/supabase.js';
