@@ -678,17 +678,19 @@ async function googleSearch(query: string, attempt: number = 0): Promise<any[]> 
   }
 }
 
-async function llmRespond(prompt: string, systemPrompt: string = "", message: Message | null = null, history: any[] = [], charPrompt: string | null = null): Promise<string> {
+// --- llmRespond: temperature引数追加 ---
+async function llmRespond(prompt: string, systemPrompt: string = "", message: Message | null = null, history: any[] = [], charPrompt: string | null = null, temperature: number = 0.7): Promise<string> {
   const systemCharPrompt = charPrompt ?? (message ? buildCharacterPrompt(message) : "");
   const messages: ChatCompletionMessageParam[] = [
     { role: "system", content: systemCharPrompt + (systemPrompt ? `\n${systemPrompt}` : "") },
     ...history
   ];
   messages.push({ role: "user", content: prompt });
-  console.debug('[llmRespond] 入力messages:', JSON.stringify(messages).slice(0, 1000));
+  console.debug('[llmRespond] 入力messages:', JSON.stringify(messages).slice(0, 1000), 'temperature:', temperature);
   const completion = await await queuedOpenAI(() => openai.chat.completions.create({
     model: 'gpt-4.1-nano-2025-04-14',
-    messages
+    messages,
+    temperature
   }));
   console.debug('[llmRespond] LLM応答:', completion.choices[0]?.message?.content);
   return completion.choices[0]?.message?.content || "ごめんなさい、うまく答えられませんでした。";
@@ -744,7 +746,8 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
       queryGenSystemPrompt + `\n【バリエーション${i+1}】できるだけ異なる切り口で。`,
       message,
       [],
-      buildCharacterPrompt(message, affinity)
+      buildCharacterPrompt(message, affinity),
+      0 // クエリ生成も事実厳守
     );
     q = appendDateAndImpactWordsIfNeeded(userPrompt, q);
     if (q && !queries.includes(q)) queries.push(q);
@@ -799,12 +802,12 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
     })
   );
   console.debug('[enhancedSearch] ページ内容抽出結果:', pageContents);
-  // 4) LLMで関連度判定し、低いものは除外
+  // 4) LLMで関連度判定し、低いものは除外（temperature:0）
   const relPrompt = (query: string, title: string, snippet: string) =>
     `ユーザーの質問:「${query}」\n検索結果タイトル:「${title}」\nスニペット:「${snippet}」\nこの検索結果は質問に直接関係していますか？関係が深い場合は「はい」、そうでなければ「いいえ」とだけ返答してください。`;
   const relChecks = await Promise.all(
     pageContents.map(async pg => {
-      const rel = await llmRespond(userPrompt, relPrompt(userPrompt, pg.title, pg.snippet));
+      const rel = await llmRespond(userPrompt, relPrompt(userPrompt, pg.title, pg.snippet), null, [], null, 0);
       return rel.trim().startsWith('はい');
     })
   );
