@@ -16,7 +16,7 @@ import puppeteer from 'puppeteer';
 import { openai, queuedOpenAI } from './services/openai.js';
 import { supabase } from './services/supabase.js';
 import { Message, Guild, Client, ChatInputCommandInteraction } from 'discord.js';
-import { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { LRUCache } from 'lru-cache';
 

@@ -1,4 +1,6 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import pkg from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
+const { createClient } = pkg;
 
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
   throw new Error('SUPABASE_URLまたはSUPABASE_KEYが設定されていません');
