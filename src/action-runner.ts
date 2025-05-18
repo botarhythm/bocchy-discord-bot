@@ -809,40 +809,17 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
   pageContents = pageContents.filter((pg, i) => relChecks[i]);
   // --- 追加: 関連度判定で全て除外された場合は最初の1件を必ず残す ---
   if (pageContents.length === 0 && allResults.length > 0) {
-    console.warn('[enhancedSearch] 関連度判定で全除外→最初の1件を強制採用:', allResults[0]);
-    pageContents.push(allResults[0]);
-  }
-  // 5) Markdown整形・比較/矛盾指摘テンプレート
-  const useMarkdown = bocchyConfig.output_preferences?.format === 'markdown';
-  if (pageContents.length === 0 || pageContents.every(pg => !pg.text.trim())) {
-    // --- fallbackPromptでも検索結果を必ず引用 ---
-    let fallbackText = `Web検索では直接的な情報が見つかりませんでしたが、必ず下記の検索結果（タイトル・スニペット・URL）を根拠に本文中で引用・要約し、URLも明記してください。\n\n"見つかりませんでした"や"情報がありません"と返すのは禁止です。\n\n質問: ${userPrompt}`;
-    if (allResults.length > 0) {
-      const topResults = allResults.slice(0, 3);
-      fallbackText += '\n\n【検索結果リスト】';
-      topResults.forEach((r, idx) => {
-        fallbackText += `\n${idx+1}. タイトル: ${r.title}\nスニペット: ${r.snippet}\nURL: ${r.link}`;
-      });
-      fallbackText += '\n\n【重要】必ず上記の検索結果情報（タイトル・スニペット・URL）を本文中で引用・要約し、URLも明記してください。';
-    }
-    fallbackText += useMarkdown ? '\n\n【出力形式】Markdownで見やすくまとめてください。' : '';
-    console.debug('[enhancedSearch][fallbackPrompt] LLMプロンプト全文:', fallbackText);
-    const fallbackAnswer = await llmRespond(userPrompt, fallbackText, message, [], buildCharacterPrompt(message, affinity));
-    console.debug('[enhancedSearch][fallbackPrompt] LLM応答全文:', fallbackAnswer);
-    // --- 本文冒頭に【検索結果要約】を必ず強制挿入 ---
-    let searchSummary = '';
-    if (allResults.length > 0) {
-      const topResults = allResults.slice(0, 3);
-      searchSummary += '【検索結果要約】\n';
-      topResults.forEach((r, idx) => {
-        searchSummary += `${idx+1}. タイトル: ${r.title}\nスニペット: ${r.snippet}\nURL: ${r.link}\n`;
-      });
-    }
-    let finalAnswer = fallbackAnswer;
-    if (searchSummary && !fallbackAnswer.startsWith(searchSummary)) {
-      finalAnswer = searchSummary + '\n' + fallbackAnswer;
-    }
-    return { answer: finalAnswer, results: allResults.length > 0 ? allResults.slice(0, 3) : [] };
+    // 検索意図に合致しなくても、ヒットした記事を必ず紹介
+    const topResults = allResults.slice(0, 3);
+    let intro = `ご質問の意図に合致する情報は見つかりませんでしたが、検索でヒットした記事をご紹介します。\n`;
+    topResults.forEach((r, idx) => {
+      intro += `\n${idx+1}. タイトル: ${r.title}\nスニペット: ${r.snippet}\nURL: ${r.link}\n`;
+    });
+    let prompt = `${intro}\n\nこれらの記事の内容を簡単に要約し、どんな情報が得られるかを説明してください。`;
+    // LLMで要約
+    const llmAnswer = await llmRespond(userPrompt, prompt, message, [], buildCharacterPrompt(message, affinity));
+    // 応答冒頭に必ず記事リストを強制挿入
+    return { answer: intro + '\n' + llmAnswer, results: topResults };
   }
   // 比較・矛盾指摘プロンプト
   const docs = pageContents.map((pg,i) => `【${i+1}】${pg.title}\n${pg.text}\nURL: ${pg.link}`).join('\n\n');
