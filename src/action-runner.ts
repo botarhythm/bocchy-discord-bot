@@ -29,6 +29,7 @@ import {
 } from './config/rules.js';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
+import { llmGroundedSummarize } from './utils/llmGrounded';
 
 // --- クロールAPI利用回数管理 ---
 const userCrawlCount = new Map(); // userId: { date: string, count: number }
@@ -589,9 +590,11 @@ export async function summarizeWebPage(rawText: string): Promise<string> {
   if (!rawText || rawText.length < 30) {
     return 'ページ内容が取得できませんでした。URLが無効か、クロールが制限されている可能性があります。';
   }
-  const systemPrompt = `【Webページ内容】\n${rawText}`;
-  const userPrompt = `この内容を日本語で要約してください。特徴やポイントを箇条書きで。事実のみ。`;
-  return await llmRespond(userPrompt, systemPrompt, null, []);
+  // Strict Web Grounding型で要約
+  return await llmGroundedSummarize(
+    rawText,
+    'この内容を日本語で要約してください。特徴やポイントを箇条書きで。事実のみ。'
+  );
 }
 
 // ---- 1. googleSearch: 信頼性の高いサイトを優先しつつSNS/ブログも含める ----
