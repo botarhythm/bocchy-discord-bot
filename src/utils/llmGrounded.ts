@@ -30,7 +30,8 @@ export const summarizeTool = {
       type: 'object',
       properties: {
         page_content: { type: 'string', description: 'Webページ本文' },
-        lang: { type: 'string', description: '要約言語（ja等）' }
+        lang: { type: 'string', description: '要約言語（ja等）' },
+        character: { type: 'string', description: '要約に反映するキャラクター設定（任意）' }
       },
       required: ['page_content', 'lang']
     }
@@ -38,12 +39,13 @@ export const summarizeTool = {
 };
 
 /**
- * Strict Web Grounding型LLM要約ラッパー（本物のfunction callingワークフロー）
+ * Strict Web Grounding型LLM要約ラッパー（2段階APIラウンドトリップ方式）
  * @param url 対象URL
+ * @param character キャラクター設定（任意）
  * @returns LLM応答（JSON: { summary: string, grounding_ok: boolean }）
  */
-export async function strictWebGroundedSummarize(url: string): Promise<{ summary: string, grounding_ok: boolean }> {
-  // --- step-1: crawl function calling ---
+export async function strictWebGroundedSummarize(url: string, character: string = ''): Promise<{ summary: string, grounding_ok: boolean }> {
+  // --- step-1: crawl function calling（OpenAIにツール呼び出しを提案させる） ---
   const crawlRes = await openai.chat.completions.create({
     model: 'gpt-4o-mini-2024-07-18',
     tools: [crawlTool],
@@ -66,12 +68,15 @@ export async function strictWebGroundedSummarize(url: string): Promise<{ summary
   if (!pageContent || pageContent.length < 50) {
     return { summary: '情報取得不可', grounding_ok: false };
   }
-  // --- step-2: crawlのtool outputをOpenAIに返す（summarize function calling） ---
+  // --- step-2: crawlのtool outputをOpenAIに再リクエスト（summarize function calling） ---
+  const toolOutputs = [{
+    tool_call_id: crawlCall.id,
+    output: { text: pageContent }
+  }];
   const sumRes = await openai.chat.completions.create({
     model: 'gpt-4o-mini-2024-07-18',
     tools: [summarizeTool],
     response_format: { type: 'json_object' },
-    tool_choice: { type: 'function', function: { name: 'summarize' } },
     messages: [
       { role: 'user', content: url },
       {
@@ -79,8 +84,8 @@ export async function strictWebGroundedSummarize(url: string): Promise<{ summary
         tool_call_id: crawlCall.id,
         content: JSON.stringify({ text: pageContent })
       },
-      { role: 'system', content: 'Summarize ONLY from "page_content". If missing, return {"summary":"情報取得不可","grounding_ok":false}.' },
-      { role: 'user', content: JSON.stringify({ page_content: pageContent, lang: 'ja' }) }
+      { role: 'system', content: 'Summarize ONLY from "page_content". If missing, return {"summary":"情報取得不可","grounding_ok":false}.' + (character ? ` キャラクター性: ${character}` : '') },
+      { role: 'user', content: JSON.stringify({ page_content: pageContent, lang: 'ja', character }) }
     ],
     temperature: 0
   });
