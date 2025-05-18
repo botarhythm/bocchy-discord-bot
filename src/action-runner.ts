@@ -827,31 +827,33 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
   const useMarkdown = bocchyConfig.output_preferences?.format === 'markdown';
   if (pageContents.length === 0 || pageContents.every(pg => !pg.text.trim())) {
     // --- fallbackPromptでも検索結果を必ず引用 ---
-    let fallbackText = `Web検索では直接的な情報が見つかりませんでしたが、一般的な知識や推論でお答えします。\n\n質問: ${userPrompt}`;
+    let fallbackText = `Web検索では直接的な情報が見つかりませんでしたが、必ず下記の検索結果（タイトル・スニペット・URL）を根拠に本文中で引用・要約し、URLも明記してください。\n\n"見つかりませんでした"や"情報がありません"と返すのは禁止です。\n\n質問: ${userPrompt}`;
     if (allResults.length > 0) {
-      const first = allResults[0];
-      fallbackText += `\n\n【参考になりそうな検索結果】\nタイトル: ${first.title}\nスニペット: ${first.snippet}\nURL: ${first.link}`;
-      fallbackText += '\n\n【重要】必ず上記の検索結果情報（タイトル・スニペット・URL）を文中で引用し、URLも明記してください。';
+      const topResults = allResults.slice(0, 3);
+      fallbackText += '\n\n【検索結果リスト】';
+      topResults.forEach((r, idx) => {
+        fallbackText += `\n${idx+1}. タイトル: ${r.title}\nスニペット: ${r.snippet}\nURL: ${r.link}`;
+      });
+      fallbackText += '\n\n【重要】必ず上記の検索結果情報（タイトル・スニペット・URL）を本文中で引用・要約し、URLも明記してください。';
     }
     fallbackText += useMarkdown ? '\n\n【出力形式】Markdownで見やすくまとめてください。' : '';
     console.debug('[enhancedSearch][fallbackPrompt] LLMプロンプト全文:', fallbackText);
     const fallbackAnswer = await llmRespond(userPrompt, fallbackText, message, [], buildCharacterPrompt(message, affinity));
     console.debug('[enhancedSearch][fallbackPrompt] LLM応答全文:', fallbackAnswer);
-    // --- titleやURLが含まれていなければ自動で追記 ---
+    // --- 本文冒頭に【検索結果要約】を必ず強制挿入 ---
+    let searchSummary = '';
     if (allResults.length > 0) {
-      const first = allResults[0];
-      const mustInclude = [first.title, first.link];
-      let needsAppend = false;
-      for (const item of mustInclude) {
-        if (item && !fallbackAnswer.includes(item)) needsAppend = true;
-      }
-      let finalAnswer = fallbackAnswer;
-      if (needsAppend) {
-        finalAnswer += `\n\n【参考情報（自動追記）】\nタイトル: ${first.title}\nURL: ${first.link}`;
-      }
-      return { answer: finalAnswer, results: allResults.length > 0 ? [allResults[0]] : [] };
+      const topResults = allResults.slice(0, 3);
+      searchSummary += '【検索結果要約】\n';
+      topResults.forEach((r, idx) => {
+        searchSummary += `${idx+1}. タイトル: ${r.title}\nスニペット: ${r.snippet}\nURL: ${r.link}\n`;
+      });
     }
-    return { answer: fallbackAnswer, results: [] };
+    let finalAnswer = fallbackAnswer;
+    if (searchSummary && !fallbackAnswer.startsWith(searchSummary)) {
+      finalAnswer = searchSummary + '\n' + fallbackAnswer;
+    }
+    return { answer: finalAnswer, results: allResults.length > 0 ? allResults.slice(0, 3) : [] };
   }
   // 比較・矛盾指摘プロンプト
   const docs = pageContents.map((pg,i) => `【${i+1}】${pg.title}\n${pg.text}\nURL: ${pg.link}`).join('\n\n');
