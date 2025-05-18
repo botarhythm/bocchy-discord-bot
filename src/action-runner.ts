@@ -857,13 +857,13 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
       systemCharPrompt = '';
       prompt = '';
     } else {
-      // --- 短期記憶バッファから履歴を取得 ---
-      history = memory.getRecentHistory();
+      // --- 短期記憶バッファから履歴を取得し、'bot'→'assistant'に変換 ---
+      history = memory.getRecentHistory().map(h => h.role === 'bot' ? { ...h, role: 'assistant' } : h);
     }
     // 5. LLM応答生成
     const answer = await llmRespond(userPrompt, systemCharPrompt + systemPrompt + prompt, message, history);
-    // --- ボット応答を短期記憶バッファに記録 ---
-    memory.addMessage('bot', answer);
+    // --- ボット応答を短期記憶バッファに記録（role: 'assistant'） ---
+    memory.addMessage('assistant', answer);
     await message.reply(answer);
     if (supabase) await updateAffinity(userId, guildId, message.content);
     if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
