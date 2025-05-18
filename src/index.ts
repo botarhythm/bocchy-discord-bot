@@ -226,43 +226,49 @@ client.on("messageCreate", async (message) => {
 
   // --- URLが含まれていれば即時要約・記憶 ---
   if (urls.length > 0) {
+    let crawlError = null;
+    let content = '';
     try {
       await message.reply('URLをディープクロール中です…');
       const results = await deepCrawl(urls[0], userId, isAdmin);
-      if (!results.length) {
-        await message.reply('URLのクロール結果が取得できませんでした。');
-        return;
-      }
-      const main = results[0];
-      // --- 本文品質チェック ---
-      const content = main.content || '';
-      const MIN_LEN = 100;
-      const NG_PATTERNS = [/cookie/i, /利用規約/, /This site uses cookies/i, /javascript/i, /function\s*\(/i];
-      const KEYWORDS = [/コーヒー/, /焙煎/, /千倉町/, /豆/, /coffee/i, /roast/i, /chikura/i];
-      if (!content || content.replace(/\s/g, '').length < MIN_LEN || NG_PATTERNS.some(r=>r.test(content)) || !KEYWORDS.some(r=>r.test(content))) {
-        await message.reply('URLの内容が取得できませんでした。');
-        return;
-      }
-      // --- ここで必ず要約を生成 ---
-      const summarized = await summarizeWebPage(content);
-      if (!summarized || /取得できません|エラー|not found|failed|unavailable/i.test(summarized)) {
-        await message.reply('URLの内容が取得できませんでした。');
-        return;
-      }
-      recentUrlMap.set(channelId, { url: urls[0], summary: summarized, timestamp: Date.now() });
-      await message.reply(`【URLディープクロール要約】\n${summarized.slice(0, 1500)}`);
-      // URL要約後も通常AI応答を必ず実行（プロンプトにsummaryを含める）
-      const flags = detectFlags(message, client) || {};
-      (flags as any).recentUrlSummary = summarized;
-      (flags as any).forceUrlSummaryMode = true;
-      (flags as any).url = urls[0];
-      const action = pickAction(flags);
-      if (action) await runPipeline(action, { message, flags, supabase });
-      return;
-    } catch (err) {
-      await message.reply('URLのクロール・要約中にエラーが発生しました。');
+      content = results[0]?.content || '';
+    } catch (e) {
+      crawlError = e.message || e;
+    }
+    if (!content || content.replace(/\s/g, '').length < 100) {
+      await message.reply(`Webクロール失敗: ${crawlError || '本文が取得できませんでした。'}`);
       return;
     }
+    // 本文が取得できた場合のみAI要約
+    const summarized = await summarizeWebPage(content);
+    if (!summarized || /取得できません|エラー|not found|failed|unavailable/i.test(summarized)) {
+      await message.reply('Webページ要約が取得できませんでした。');
+      return;
+    }
+    recentUrlMap.set(channelId, { url: urls[0], summary: summarized, timestamp: Date.now() });
+    await message.reply(`【URLディープクロール要約】\n${summarized.slice(0, 1500)}`);
+    // URL要約後も通常AI応答は行わない（Web内容取得時のみ要約で終了）
+    return;
+  }
+
+  // --- 検索ニーズがある場合（例: "教えて", "特徴", "検索" など） ---
+  const searchKeywords = ["教えて", "特徴", "検索", "調べて", "とは", "まとめ", "要約", "解説"];
+  if (searchKeywords.some(k => message.content.includes(k))) {
+    let searchError = null;
+    let searchResults = [];
+    try {
+      await message.reply('Google検索中です…');
+      searchResults = await enhancedSearch(message.content, message, 0, supabase);
+    } catch (e) {
+      searchError = e.message || e;
+    }
+    if (!searchResults || !searchResults.results || !searchResults.results.length) {
+      await message.reply(`Google検索失敗: ${searchError || '検索結果が見つかりませんでした。'}`);
+      return;
+    }
+    // 検索結果が取得できた場合のみAI要約・比較応答
+    await message.reply(searchResults.answer);
+    return;
   }
 
   // --- 人間の発言には必ず応答（BOT_CHAT_CHANNEL含む） ---
