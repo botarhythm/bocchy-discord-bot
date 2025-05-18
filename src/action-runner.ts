@@ -806,14 +806,17 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
     let systemPrompt = '';
     let userPrompt = message.content;
     let history: any[] = [];
+    let systemCharPrompt = '';
     // --- URL要約強制モード ---
     if (flags && flags.forceUrlSummaryMode && flags.recentUrlSummary && flags.url) {
       systemPrompt = `【重要】以下のURL内容を必ず参照し、事実に基づいて答えてください。創作や推測は禁止です。\n----\n${flags.recentUrlSummary}\n----\n`;
       userPrompt = `このURL（${flags.url}）の内容を要約し、特徴を事実ベースで説明してください。創作や推測は禁止です。`;
       history = [];
+      systemCharPrompt = '';
+      prompt = '';
     }
     // 5. LLM応答生成
-    const answer = await llmRespond(userPrompt, systemPrompt + prompt, message, history);
+    const answer = await llmRespond(userPrompt, systemCharPrompt + systemPrompt + prompt, message, history);
     await message.reply(answer);
     if (supabase) await updateAffinity(userId, guildId, message.content);
     if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);

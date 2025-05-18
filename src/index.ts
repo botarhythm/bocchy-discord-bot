@@ -290,11 +290,17 @@ client.on("messageCreate", async (message) => {
       if (main.links && main.links.length) {
         summary += `\n【このページの主要リンク】\n` + main.links.map((l: string, i: number) => `・${l}`).join('\n');
       }
-      recentUrlMap.set(channelId, { url: urls[0], summary, timestamp: Date.now() });
-      await message.reply(`【URLディープクロール要約】\n${summary.slice(0, 1500)}`);
+      // --- ここで必ず要約を生成 ---
+      const summarized = await summarizeWebPage(main.content, message.content, message);
+      if (!summarized || /取得できません|エラー|not found|failed|unavailable/i.test(summarized)) {
+        await message.reply('URLの内容が取得できませんでした。');
+        return;
+      }
+      recentUrlMap.set(channelId, { url: urls[0], summary: summarized, timestamp: Date.now() });
+      await message.reply(`【URLディープクロール要約】\n${summarized.slice(0, 1500)}`);
       // URL要約後も通常AI応答を必ず実行（プロンプトにsummaryを含める）
       const flags = detectFlags(message, client) || {};
-      (flags as any).recentUrlSummary = summary;
+      (flags as any).recentUrlSummary = summarized;
       (flags as any).forceUrlSummaryMode = true;
       (flags as any).url = urls[0];
       const action = pickAction(flags);
