@@ -1,5 +1,6 @@
 import crypto from 'crypto';
-import { openai } from './openai';
+import { openai } from '../services/openai.js';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 /**
  * Strict Web Grounding型LLM要約ラッパー
@@ -11,7 +12,7 @@ export async function llmGroundedSummarize(webContent: string, userPrompt: strin
   if (!webContent || webContent.length < 50) return '情報取得不可';
   const hash = crypto.createHash('sha256').update(webContent).digest('hex');
   const systemPrompt = `You must answer *exclusively* from the provided web-content. If the answer is not present, reply "情報取得不可".\nPage hash: ${hash}\n<BEGIN_PAGE>\n${webContent}\n<END_PAGE>`;
-  const messages = [
+  const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt }
   ];

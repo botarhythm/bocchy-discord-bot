@@ -5,7 +5,7 @@ import { openai } from './services/openai.js';
 import { supabase } from './services/supabase.js';
 import { detectFlags } from "./flag-detector.js";
 import { pickAction } from "./decision-engine.js";
-import { runPipeline, shouldContextuallyIntervene, buildHistoryContext, getAffinity, buildCharacterPrompt, updateAffinity, saveHistory, deepCrawl, summarizeWebPage, fetchPageContent } from "./action-runner.js";
+import { runPipeline, shouldContextuallyIntervene, buildHistoryContext, getAffinity, buildCharacterPrompt, updateAffinity, saveHistory, deepCrawl, summarizeWebPage, fetchPageContent, enhancedSearch } from "./action-runner.js";
 import http from 'http';
 import { BOT_CHAT_CHANNEL, MAX_ACTIVE_TURNS, MAX_BOT_CONVO_TURNS, MAX_DAILY_RESPONSES, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END, EMERGENCY_STOP } from './config/index.js';
 
@@ -233,7 +233,7 @@ client.on("messageCreate", async (message) => {
       const results = await deepCrawl(urls[0], userId, isAdmin);
       content = results[0]?.content || '';
     } catch (e) {
-      crawlError = e.message || e;
+      crawlError = e instanceof Error ? e.message : String(e);
     }
     if (!content || content.replace(/\s/g, '').length < 100) {
       await message.reply(`Webクロール失敗: ${crawlError || '本文が取得できませんでした。'}`);
@@ -255,18 +255,17 @@ client.on("messageCreate", async (message) => {
   const searchKeywords = ["教えて", "特徴", "検索", "調べて", "とは", "まとめ", "要約", "解説"];
   if (searchKeywords.some(k => message.content.includes(k))) {
     let searchError = null;
-    let searchResults = [];
+    let searchResults: { answer: string, results: any[] } | null = null;
     try {
       await message.reply('Google検索中です…');
       searchResults = await enhancedSearch(message.content, message, 0, supabase);
     } catch (e) {
-      searchError = e.message || e;
+      searchError = e instanceof Error ? e.message : String(e);
     }
     if (!searchResults || !searchResults.results || !searchResults.results.length) {
-      await message.reply(`Google検索失敗: ${searchError || '検索結果が見つかりませんでした。'}`);
+      await message.reply(`Google検索失敗: ${searchError || '検索結果が取得できませんでした。'}`);
       return;
     }
-    // 検索結果が取得できた場合のみAI要約・比較応答
     await message.reply(searchResults.answer);
     return;
   }

@@ -29,7 +29,7 @@ import {
 } from './config/rules.js';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
-import { llmGroundedSummarize } from './utils/llmGrounded';
+import { llmGroundedSummarize } from './utils/llmGrounded.js';
 
 // --- クロールAPI利用回数管理 ---
 const userCrawlCount = new Map(); // userId: { date: string, count: number }
