@@ -869,6 +869,18 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
     let systemCharPrompt = '';
     // --- 短期記憶バッファにユーザー発話を記録 ---
     memory.addMessage('user', message.content);
+
+    // --- クエリ主導型: 検索・クロール命令が含まれる場合は必ず検索・クロールを実行 ---
+    if (/(検索|調べて|天気|ニュース|速報|URL|リンク|要約|まとめて|Web|web|ウェブ|サイト|ページ|情報|教えて|見つけて|リサーチ)/i.test(message.content)) {
+      // enhancedSearchで検索・クロール→LLM要約
+      const { answer } = await enhancedSearch(message.content, message, affinity, supabase);
+      memory.addMessage('assistant', answer);
+      await message.reply(answer);
+      if (supabase) await updateAffinity(userId, guildId, message.content);
+      if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
+      return;
+    }
+
     // --- URL要約強制モード ---
     if (flags && flags.forceUrlSummaryMode && flags.recentUrlSummary && flags.url) {
       systemPrompt = `【重要】以下のURL内容を必ず参照し、事実に基づいて答えてください。創作や推測は禁止です。\n----\n${flags.recentUrlSummary}\n----\n`;
