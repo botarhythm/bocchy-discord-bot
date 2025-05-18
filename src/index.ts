@@ -291,7 +291,7 @@ client.on("messageCreate", async (message) => {
         summary += `\n【このページの主要リンク】\n` + main.links.map((l: string, i: number) => `・${l}`).join('\n');
       }
       // --- ここで必ず要約を生成 ---
-      const summarized = await summarizeWebPage(main.content, message.content, message);
+      const summarized = await summarizeWebPage(main.content);
       if (!summarized || /取得できません|エラー|not found|failed|unavailable/i.test(summarized)) {
         await message.reply('URLの内容が取得できませんでした。');
         return;

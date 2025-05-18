@@ -558,15 +558,13 @@ export async function fetchPageContent(url: string): Promise<string> {
 }
 
 // --- ChatGPT風: Webページ内容をLLMで自然言語要約 ---
-export async function summarizeWebPage(rawText: string, userPrompt: string = '', message: Message | null = null, charPrompt: string | null = null): Promise<string> {
+export async function summarizeWebPage(rawText: string): Promise<string> {
   if (!rawText || rawText.length < 30) {
     return 'ページ内容が取得できませんでした。URLが無効か、クロールが制限されている可能性があります。';
   }
-  const prompt =
-    `以下はWebページの内容です。重要なポイント・要旨・特徴を日本語で分かりやすく要約してください。` +
-    (userPrompt ? `\n\n【ユーザーの質問・要望】${userPrompt}` : '') +
-    `\n\n【ページ内容】\n${rawText}\n\n【出力形式】\n- 箇条書きや短い段落でまとめてください。\n- 事実ベースで簡潔に。`;
-  return await llmRespond(userPrompt, prompt, message, [], charPrompt);
+  const systemPrompt = `【Webページ内容】\n${rawText}`;
+  const userPrompt = `この内容を日本語で要約してください。特徴やポイントを箇条書きで。事実のみ。`;
+  return await llmRespond(userPrompt, systemPrompt, null, []);
 }
 
 // ---- 1. googleSearch: 信頼性の高いサイトを優先しつつSNS/ブログも含める ----
