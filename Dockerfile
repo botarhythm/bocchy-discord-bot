@@ -7,6 +7,7 @@ COPY package-lock.json ./
 COPY src ./src
 COPY tsconfig.json ./
 COPY bot_logic.yaml ./
+COPY bocchy-character.yaml ./
 
 RUN npm install --production=false
 RUN npm run build || (echo 'build failed' && find /app -type f && ls -l /app/dist || true && ls -l /app/dist/services || true && cat /app/npm-debug.log || true)
