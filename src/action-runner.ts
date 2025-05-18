@@ -228,7 +228,7 @@ export async function buildHistoryContext(
     const embeddingKey = `embedding:${userId}:${guildId}:${lastUserMsg}`;
     embedding = embeddingCache.get(embeddingKey);
     if (!embedding && lastUserMsg) {
-      const embRes = await queuedOpenAI(() => openai.embeddings.create({
+      const embRes = await await queuedOpenAI(() => openai.embeddings.create({
         model: 'text-embedding-3-small',
         input: lastUserMsg
       }));

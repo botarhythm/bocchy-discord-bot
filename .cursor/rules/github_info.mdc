@@ -10,4 +10,6 @@ alwaysApply: true
 - **Owner:** `botarhythm`
 - **Repo:** `bocchy-discord-bot`
 
-コミット履歴の確認、ブランチ操作、プルリクエスト作成などの際に使用します。 
+コミット履歴の確認、ブランチ操作、プルリクエスト作成などの際に使用します。
+
+# OpenAI APIモデルはgpt-4.1-nano-2025-04-14を使用 
