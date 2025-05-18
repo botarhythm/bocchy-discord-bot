@@ -14,12 +14,14 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "@supabase/supabase-js": "^2.49.4",
     "axios": "^1.6.0",
     "cheerio": "^1.0.0",
     "discord.js": "^14.0.0",
     "dotenv": "^16.5.0",
     "js-yaml": "^4.1.0",
+    "jsdom": "^26.1.0",
     "langchain": "0.3.23",
     "lru-cache": "^11.1.0",
     "node-fetch": "^3.3.2",
