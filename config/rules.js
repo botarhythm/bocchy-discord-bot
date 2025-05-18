@@ -16,3 +16,7 @@ export const CRAWL_API_MAX_CALLS_PER_USER_PER_DAY = {
     admin: 50,
 };
 export const CRAWL_CACHE_TTL_MINUTES = 10;
+
+export const BASE = {
+    SHORT_TERM_MEMORY_LENGTH: 8,
+};

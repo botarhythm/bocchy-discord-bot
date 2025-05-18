@@ -25,11 +25,13 @@ import {
   CRAWL_MAX_LINKS_PER_PAGE,
   CRAWL_API_MAX_CALLS_PER_REQUEST,
   CRAWL_API_MAX_CALLS_PER_USER_PER_DAY,
-  CRAWL_CACHE_TTL_MINUTES
+  CRAWL_CACHE_TTL_MINUTES,
+  BASE
 } from './config/rules.js';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 import { strictWebGroundedSummarize } from './utils/llmGrounded.js';
+import { ContextMemory } from './utils/contextMemory.js';
 
 // --- クロールAPI利用回数管理 ---
 const userCrawlCount = new Map(); // userId: { date: string, count: number }
@@ -241,6 +243,10 @@ function buildCharacterPrompt(
 // ---------- 0. 定数 ----------
 const SHORT_TURNS   = 8;   // ← 直近 8 往復だけ詳細（元は4）
 const MAX_ARTICLES  = 3;
+
+// --- 短期記憶バッファ（ContextMemory） ---
+const memory = new ContextMemory(BASE.SHORT_TERM_MEMORY_LENGTH || 8);
+// runPipeline等でmemory.addMessage('user'|'bot', content)を呼び、プロンプト生成時にmemory.getRecentHistory()を利用
 
 // ---------- A.  summary を取ってシステムに渡すヘルパ ----------
 export async function buildHistoryContext(
@@ -848,6 +854,8 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
     let userPrompt = message.content;
     let history: any[] = [];
     let systemCharPrompt = '';
+    // --- 短期記憶バッファにユーザー発話を記録 ---
+    memory.addMessage('user', message.content);
     // --- URL要約強制モード ---
     if (flags && flags.forceUrlSummaryMode && flags.recentUrlSummary && flags.url) {
       systemPrompt = `【重要】以下のURL内容を必ず参照し、事実に基づいて答えてください。創作や推測は禁止です。\n----\n${flags.recentUrlSummary}\n----\n`;
@@ -855,9 +863,14 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
       history = [];
       systemCharPrompt = '';
       prompt = '';
+    } else {
+      // --- 短期記憶バッファから履歴を取得 ---
+      history = memory.getRecentHistory();
     }
     // 5. LLM応答生成
     const answer = await llmRespond(userPrompt, systemCharPrompt + systemPrompt + prompt, message, history);
+    // --- ボット応答を短期記憶バッファに記録 ---
+    memory.addMessage('bot', answer);
     await message.reply(answer);
     if (supabase) await updateAffinity(userId, guildId, message.content);
     if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
