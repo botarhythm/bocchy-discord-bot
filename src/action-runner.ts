@@ -20,7 +20,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { LRUCache } from 'lru-cache';
 import { SubjectTracker, extractSubjectCandidates, createBranchNode, buildPrompt } from './utils/index.js';
-import { CRAWL_MAX_DEPTH, CRAWL_MAX_LINKS_PER_PAGE, CRAWL_API_MAX_CALLS_PER_REQUEST, CRAWL_API_MAX_CALLS_PER_USER_PER_DAY, CRAWL_CACHE_TTL_MINUTES, BASE } from './config/rules.js';
+import { CRAWL_MAX_DEPTH, CRAWL_MAX_LINKS_PER_PAGE, CRAWL_API_MAX_CALLS_PER_REQUEST, CRAWL_API_MAX_CALLS_PER_USER_PER_DAY, CRAWL_CACHE_TTL_MINUTES, BASE, MAX_ARTICLES } from './config/rules.js';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 import { strictWebGroundedSummarize } from './utils/llmGrounded.js';
@@ -235,7 +235,6 @@ function buildCharacterPrompt(
 
 // ---------- 0. 定数 ----------
 const SHORT_TURNS   = 8;   // ← 直近 8 往復だけ詳細（元は4）
-const MAX_ARTICLES  = 3;
 
 // --- 短期記憶バッファ（ContextMemory） ---
 const memory = new ContextMemory(BASE.SHORT_TERM_MEMORY_LENGTH || 8);
@@ -609,7 +608,7 @@ export async function summarizeWebPage(url: string): Promise<string> {
   return summary;
 }
 
-// ---- 1. googleSearch: 信頼性の高いサイトを優先しつつSNS/ブログも含める ----
+// ---- 1. googleSearch: 信頼性の高いサイトを優先しつつSNS/ブログも含める（堅牢化・リトライ・エラー詳細） ----
 async function googleSearch(query: string, attempt: number = 0): Promise<any[]> {
   const apiKey = process.env.GOOGLE_API_KEY;
   const cseId = process.env.GOOGLE_CSE_ID;
@@ -623,34 +622,55 @@ async function googleSearch(query: string, attempt: number = 0): Promise<any[]> 
   }
   const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}` +
               `&q=${encodeURIComponent(query)}&hl=ja&gl=jp&lr=lang_ja&sort=date`;
-  const res = await fetch(url);
-  const data = await res.json() as any;
-  if (!data.items || data.items.length === 0) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      const errText = await res.text();
+      console.warn(`[googleSearch] Google APIエラー: status=${res.status} body=${errText}`);
+      if (attempt < 2) {
+        await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
+        return await googleSearch(query, attempt + 1);
+      }
+      return [];
+    }
+    const data = await res.json() as any;
+    if (!data.items || data.items.length === 0) {
+      if (data.error) {
+        console.warn(`[googleSearch] Google APIレスポンスエラー:`, data.error);
+      }
+      return [];
+    }
+    // 除外ドメインリスト（ログイン必須・リダイレクト・広告系のみ厳格除外）
+    const EXCLUDE_DOMAINS = [
+      'login', 'auth', 'accounts.google.com', 'ad.', 'ads.', 'doubleclick.net', 'googlesyndication.com'
+    ];
+    // 優先ドメインリスト（公式・教育・ニュース・自治体）
+    const PRIORITY_DOMAINS = [
+      'go.jp', 'ac.jp', 'ed.jp', 'nhk.or.jp', 'asahi.com', 'yomiuri.co.jp', 'mainichi.jp',
+      'nikkei.com', 'reuters.com', 'bloomberg.co.jp', 'news.yahoo.co.jp', 'city.', 'pref.', 'gkz.or.jp', 'or.jp', 'co.jp', 'jp', 'com', 'org', 'net'
+    ];
+    // SNS/ブログも候補に含める
+    const filtered = data.items
+      .filter((i: any) => /^https?:\/\//.test(i.link))
+      .filter((i: any) => !EXCLUDE_DOMAINS.some(domain => i.link.includes(domain)))
+      .sort((a: any, b: any) => {
+        const aPriority = PRIORITY_DOMAINS.some(domain => a.link.includes(domain)) ? 2 :
+                          /twitter|x\.com|facebook|instagram|threads|note|blog|tiktok|line|pinterest|linkedin|youtube|discord/.test(a.link) ? 1 : 0;
+        const bPriority = PRIORITY_DOMAINS.some(domain => b.link.includes(domain)) ? 2 :
+                          /twitter|x\.com|facebook|instagram|threads|note|blog|tiktok|line|pinterest|linkedin|youtube|discord/.test(b.link) ? 1 : 0;
+        return bPriority - aPriority;
+      })
+      .slice(0, MAX_ARTICLES)
+      .map((i: any) => ({ title: i.title, link: i.link, snippet: i.snippet }));
+    return filtered;
+  } catch (e) {
+    console.warn('[googleSearch] fetch例外:', e);
+    if (attempt < 2) {
+      await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
+      return await googleSearch(query, attempt + 1);
+    }
     return [];
   }
-  // 除外ドメインリスト（ログイン必須・リダイレクト・広告系のみ厳格除外）
-  const EXCLUDE_DOMAINS = [
-    'login', 'auth', 'accounts.google.com', 'ad.', 'ads.', 'doubleclick.net', 'googlesyndication.com'
-  ];
-  // 優先ドメインリスト（公式・教育・ニュース・自治体）
-  const PRIORITY_DOMAINS = [
-    'go.jp', 'ac.jp', 'ed.jp', 'nhk.or.jp', 'asahi.com', 'yomiuri.co.jp', 'mainichi.jp',
-    'nikkei.com', 'reuters.com', 'bloomberg.co.jp', 'news.yahoo.co.jp', 'city.', 'pref.', 'gkz.or.jp', 'or.jp', 'co.jp', 'jp', 'com', 'org', 'net'
-  ];
-  // SNS/ブログも候補に含める
-  const filtered = data.items
-    .filter((i: any) => /^https?:\/\//.test(i.link))
-    .filter((i: any) => !EXCLUDE_DOMAINS.some(domain => i.link.includes(domain)))
-    .sort((a: any, b: any) => {
-      const aPriority = PRIORITY_DOMAINS.some(domain => a.link.includes(domain)) ? 2 :
-                        /twitter|x\.com|facebook|instagram|threads|note|blog|tiktok|line|pinterest|linkedin|youtube|discord/.test(a.link) ? 1 : 0;
-      const bPriority = PRIORITY_DOMAINS.some(domain => b.link.includes(domain)) ? 2 :
-                        /twitter|x\.com|facebook|instagram|threads|note|blog|tiktok|line|pinterest|linkedin|youtube|discord/.test(b.link) ? 1 : 0;
-      return bPriority - aPriority;
-    })
-    .slice(0, MAX_ARTICLES)
-    .map((i: any) => ({ title: i.title, link: i.link, snippet: i.snippet }));
-  return filtered;
 }
 
 async function llmRespond(prompt: string, systemPrompt: string = "", message: Message | null = null, history: any[] = [], charPrompt: string | null = null): Promise<string> {
