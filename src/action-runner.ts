@@ -614,11 +614,11 @@ async function googleSearch(query: string, attempt: number = 0): Promise<any[]> 
   const cseId = process.env.GOOGLE_CSE_ID;
   console.debug('[googleSearch] 入力クエリ:', query, 'API_KEY:', apiKey ? 'set' : 'unset', 'CSE_ID:', cseId ? 'set' : 'unset');
   if (!apiKey || !cseId) {
-    console.warn('[googleSearch] Google APIキーまたはCSE IDが未設定です');
+    console.warn('[googleSearch] Google APIキーまたはCSE IDが未設定です。空配列を返します');
     return [];
   }
   if (!query) {
-    console.warn('[googleSearch] 検索クエリが空です');
+    console.warn('[googleSearch] 検索クエリが空です。空配列を返します');
     return [];
   }
   const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}` +
@@ -628,7 +628,7 @@ async function googleSearch(query: string, attempt: number = 0): Promise<any[]> 
     console.debug('[googleSearch] APIリクエストURL:', url, 'status:', res.status);
     if (!res.ok) {
       const errText = await res.text();
-      console.warn(`[googleSearch] Google APIエラー: status=${res.status} body=${errText}`);
+      console.warn(`[googleSearch] Google APIエラー: status=${res.status} body=${errText}。空配列を返します`);
       if (attempt < 2) {
         await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
         return await googleSearch(query, attempt + 1);
@@ -639,7 +639,9 @@ async function googleSearch(query: string, attempt: number = 0): Promise<any[]> 
     console.debug('[googleSearch] APIレスポンス:', JSON.stringify(data).slice(0, 500));
     if (!data.items || data.items.length === 0) {
       if (data.error) {
-        console.warn(`[googleSearch] Google APIレスポンスエラー:`, data.error);
+        console.warn(`[googleSearch] Google APIレスポンスエラー:`, data.error, '空配列を返します');
+      } else {
+        console.warn('[googleSearch] Google APIレスポンスにitemsが存在しないか空です。空配列を返します');
       }
       return [];
     }
@@ -667,7 +669,7 @@ async function googleSearch(query: string, attempt: number = 0): Promise<any[]> 
       .map((i: any) => ({ title: i.title, link: i.link, snippet: i.snippet }));
     return filtered;
   } catch (e) {
-    console.warn('[googleSearch] fetch例外:', e);
+    console.warn('[googleSearch] fetch例外:', e, '空配列を返します');
     if (attempt < 2) {
       await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
       return await googleSearch(query, attempt + 1);
@@ -735,7 +737,6 @@ function appendDateAndImpactWordsIfNeeded(userPrompt: string, query: string): st
 // ---- 新: ChatGPT風・自然なWeb検索体験 ----
 async function enhancedSearch(userPrompt: string, message: Message, affinity: number, supabase: SupabaseClient): Promise<{ answer: string, results: any[] }> {
   console.debug('[enhancedSearch] 入力:', { userPrompt, affinity });
-  // 1) 検索クエリ生成（多様化: 3パターン）
   let queries: string[] = [];
   for (let i = 0; i < 3; i++) {
     let q = await llmRespond(
@@ -749,13 +750,19 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
     if (q && !queries.includes(q)) queries.push(q);
   }
   console.debug('[enhancedSearch] 検索クエリ:', queries);
-  // 2) 検索実行（重複URL・ドメイン多様性）
+  if (queries.length === 0) {
+    console.warn('[enhancedSearch] クエリ生成に失敗。空配列を返します');
+    return { answer: '検索クエリ生成に失敗しました。', results: [] };
+  }
   let allResults = [];
   let seenLinks = new Set();
   let seenDomains = new Set();
   for (const query of queries) {
     let results = await googleSearch(query);
     console.debug('[enhancedSearch] googleSearch結果:', results);
+    if (!results || results.length === 0) {
+      console.warn(`[enhancedSearch] googleSearchが空配列を返却。クエリ: ${query}`);
+    }
     for (const r of results) {
       const domain = r.link.match(/^https?:\/\/(.*?)(\/|$)/)?.[1] || '';
       if (!seenLinks.has(r.link) && !seenDomains.has(domain)) {
@@ -766,6 +773,9 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
       if (allResults.length >= MAX_ARTICLES) break;
     }
     if (allResults.length >= MAX_ARTICLES) break;
+  }
+  if (allResults.length === 0) {
+    console.warn('[enhancedSearch] すべてのgoogleSearch結果が空。Web検索結果なしでフォールバックします');
   }
   // 3) ページ取得＆テキスト抽出 or スニペット利用
   let pageContents = await Promise.all(
