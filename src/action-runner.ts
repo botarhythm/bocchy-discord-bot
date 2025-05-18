@@ -859,24 +859,27 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
       const url = urls[0];
       let pageContent = '';
       let errorMsg = '';
+      let title = '';
       try {
-        pageContent = await fetchPageContent(url);
+        const fetched = await fetchPageContent(url);
+        pageContent = typeof fetched === 'string' ? fetched : '';
+        title = pageContent ? pageContent.split('\n')[0].slice(0, 60) : '';
       } catch (e) {
         errorMsg = '[fetchPageContentエラー] ' + (e && typeof e === 'object' && 'message' in e ? (e as any).message : String(e));
       }
-      let llmAnswer = '';
       if (pageContent && pageContent.length > 50) {
-        const systemPromptUrl = `【重要】以下のURL内容を必ず参照し、事実に基づいて答えてください。創作や推測は禁止です。\n----\n${pageContent.slice(0, 2000)}\n----\n`;
-        const userPromptUrl = `このURL（${url}）の内容を要約し、特徴を事実ベースで説明してください。創作や推測は禁止です。`;
-        llmAnswer = await llmRespond(userPromptUrl, systemPromptUrl, message, [], buildCharacterPrompt(message, affinity));
+        let intro = `指定されたURLのページ内容を要約します。\n\nタイトル: ${title}\n抜粋: ${pageContent.slice(0, 200)}\nURL: ${url}\n`;
+        let prompt = `${intro}\n\nこのページの内容を簡単に要約し、どんな特徴や情報が得られるかを説明してください。`;
+        const llmAnswer = await llmRespond(message.content, prompt, message, [], buildCharacterPrompt(message, affinity));
+        memory.addMessage('assistant', intro + '\n' + llmAnswer);
+        await message.reply(intro + '\n' + llmAnswer);
+        if (supabase) await updateAffinity(userId, guildId, message.content);
+        if (supabase) await saveHistory(supabase, message, message.content, intro + '\n' + llmAnswer, affinity);
+        return;
       } else {
-        llmAnswer = errorMsg || 'ページ内容が取得できませんでした。URLが無効か、クロールが制限されている可能性があります。';
+        await message.reply(errorMsg || 'ページ内容が取得できませんでした。URLが無効か、クロールが制限されている可能性があります。');
+        return;
       }
-      memory.addMessage('assistant', llmAnswer);
-      await message.reply(llmAnswer);
-      if (supabase) await updateAffinity(userId, guildId, message.content);
-      if (supabase) await saveHistory(supabase, message, message.content, llmAnswer, affinity);
-      return;
     }
 
     // --- URL要約強制モード ---
