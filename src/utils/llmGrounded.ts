@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { openai } from '../services/openai.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
+import { fetchPageContent } from '../action-runner.js';
 
 // --- crawlツール定義 ---
 export const crawlTool = {
@@ -37,12 +38,12 @@ export const summarizeTool = {
 };
 
 /**
- * Strict Web Grounding型LLM要約ラッパー（二段階: crawl→summarize）
+ * Strict Web Grounding型LLM要約ラッパー（本物のfunction callingワークフロー）
  * @param url 対象URL
  * @returns LLM応答（JSON: { summary: string, grounding_ok: boolean }）
  */
 export async function strictWebGroundedSummarize(url: string): Promise<{ summary: string, grounding_ok: boolean }> {
-  // --- step-1: crawl（function calling強制） ---
+  // --- step-1: crawl function calling ---
   const crawlRes = await openai.chat.completions.create({
     model: 'gpt-4o-mini-2024-07-18',
     tools: [crawlTool],
@@ -53,19 +54,33 @@ export async function strictWebGroundedSummarize(url: string): Promise<{ summary
     temperature: 0
   });
   const crawlCall = crawlRes.choices?.[0]?.message?.tool_calls?.[0];
-  const page = crawlCall?.args?.text || '';
-  if (!page || page.length < 50) {
+  if (!crawlCall || !crawlCall.function || !crawlCall.function.arguments) {
     return { summary: '情報取得不可', grounding_ok: false };
   }
-  // --- step-2: summarize（JSON mode＋function calling強制） ---
+  let crawlArgs: any = {};
+  try {
+    crawlArgs = JSON.parse(crawlCall.function.arguments);
+  } catch {}
+  const pageUrl = crawlArgs.url || url;
+  const pageContent = await fetchPageContent(pageUrl);
+  if (!pageContent || pageContent.length < 50) {
+    return { summary: '情報取得不可', grounding_ok: false };
+  }
+  // --- step-2: crawlのtool outputをOpenAIに返す（summarize function calling） ---
   const sumRes = await openai.chat.completions.create({
     model: 'gpt-4o-mini-2024-07-18',
-    response_format: { type: 'json_object' },
     tools: [summarizeTool],
+    response_format: { type: 'json_object' },
     tool_choice: { type: 'function', function: { name: 'summarize' } },
     messages: [
+      { role: 'user', content: url },
+      {
+        role: 'tool',
+        tool_call_id: crawlCall.id,
+        content: JSON.stringify({ text: pageContent })
+      },
       { role: 'system', content: 'Summarize ONLY from "page_content". If missing, return {"summary":"情報取得不可","grounding_ok":false}.' },
-      { role: 'user', content: JSON.stringify({ page_content: page, lang: 'ja' }) }
+      { role: 'user', content: JSON.stringify({ page_content: pageContent, lang: 'ja' }) }
     ],
     temperature: 0
   });
