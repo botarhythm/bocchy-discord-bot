@@ -586,12 +586,12 @@ export async function fetchPageContent(url: string): Promise<string> {
 }
 
 // --- ChatGPT風: Webページ内容をLLMで自然言語要約 ---
-export async function summarizeWebPage(rawText: string): Promise<string> {
-  if (!rawText || rawText.length < 30) {
+export async function summarizeWebPage(url: string): Promise<string> {
+  if (!url || url.length < 8) {
     return 'ページ内容が取得できませんでした。URLが無効か、クロールが制限されている可能性があります。';
   }
   // Strict Web Grounding型で要約（新: 二段階パイプライン）
-  const { summary } = await strictWebGroundedSummarize(rawText);
+  const { summary } = await strictWebGroundedSummarize(url);
   return summary;
 }
 

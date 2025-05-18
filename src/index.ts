@@ -226,28 +226,20 @@ client.on("messageCreate", async (message) => {
 
   // --- URLが含まれていれば即時要約・記憶 ---
   if (urls.length > 0) {
+    let summarized = '';
     let crawlError = null;
-    let content = '';
     try {
       await message.reply('URLをディープクロール中です…');
-      const results = await deepCrawl(urls[0], userId, isAdmin);
-      content = results[0]?.content || '';
+      summarized = await summarizeWebPage(urls[0]);
     } catch (e) {
       crawlError = e instanceof Error ? e.message : String(e);
     }
-    if (!content || content.replace(/\s/g, '').length < 100) {
-      await message.reply(`Webクロール失敗: ${crawlError || '本文が取得できませんでした。'}`);
-      return;
-    }
-    // 本文が取得できた場合のみAI要約
-    const summarized = await summarizeWebPage(content);
     if (!summarized || /取得できません|エラー|not found|failed|unavailable/i.test(summarized)) {
-      await message.reply('Webページ要約が取得できませんでした。');
+      await message.reply(`Webクロール失敗: ${crawlError || '本文が取得できませんでした。'}`);
       return;
     }
     recentUrlMap.set(channelId, { url: urls[0], summary: summarized, timestamp: Date.now() });
     await message.reply(`【URLディープクロール要約】\n${summarized.slice(0, 1500)}`);
-    // URL要約後も通常AI応答は行わない（Web内容取得時のみ要約で終了）
     return;
   }
 
