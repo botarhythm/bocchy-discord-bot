@@ -820,7 +820,14 @@ async function saveHistory(supabase: SupabaseClient, message: Message, userMsg: 
 }
 
 // --- runPipeline本実装 ---
-export async function runPipeline(action: string, { message, flags, supabase }: { message: Message, flags: any, supabase: SupabaseClient }): Promise<void> {
+export async function runPipeline(action: string, { message, flags, supabase, botSilenceUntil }: { message: Message, flags: any, supabase: SupabaseClient, botSilenceUntil?: number }): Promise<void> {
+  // --- 応答停止中は即return ---
+  const globalBotSilenceUntil = (typeof global !== 'undefined' && (global as any).botSilenceUntil) ? (global as any).botSilenceUntil : undefined;
+  const localBotSilenceUntil = typeof botSilenceUntil !== 'undefined' ? botSilenceUntil : undefined;
+  if ((typeof localBotSilenceUntil !== 'undefined' && Date.now() < localBotSilenceUntil) || (typeof globalBotSilenceUntil !== 'undefined' && Date.now() < globalBotSilenceUntil)) {
+    console.log('[応答停止中] runPipeline抑止');
+    return;
+  }
   try {
     const userId = message.author.id;
     const channelId = message.channel?.id;
@@ -917,12 +924,12 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
     await message.reply(answer);
     if (supabase) await updateAffinity(userId, guildId, message.content);
     if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
+    // --- recentBotRepliesに実際の応答内容で記録 ---
+    recentBotReplies.set(answer, true);
   } catch (err) {
     console.error('[runPipelineエラー]', err);
     await message.reply('エラーが発生しました。管理者にご連絡ください。');
   }
-  // 応答後、内容を記憶
-  recentBotReplies.set(message.content, true);
 }
 
 export async function shouldContextuallyIntervene(history: any[], globalContext: GlobalContext | null = null): Promise<{ intervene: boolean, reason: string }> {

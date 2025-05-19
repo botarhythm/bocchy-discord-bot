@@ -221,8 +221,31 @@ client.on("messageCreate", async (message) => {
   // --- 応答停止中は何も返さない ---
   if (botSilenceUntil && Date.now() < botSilenceUntil) return;
 
-  // --- 「静かに」コマンドで10分間応答停止 ---
-  if (/静かに/.test(message.content)) {
+  // --- 無限ループ・自己応答防止（runPipeline呼び出し前） ---
+  const botTemplates = [
+    '指定されたURLのページ内容を要約します。',
+    '検索でヒットした記事をご紹介します。',
+    'ディープクロールの結果、情報が取得できませんでした。',
+    'ページ内容が取得できませんでした。',
+    '記事要約中にエラーが発生しました。',
+    '検索結果が見つかりませんでした。',
+  ];
+  const recentBotReplies = require('./action-runner').recentBotReplies;
+  const botUserName = 'ボッチー';
+  const botUserId = client.user?.id || '';
+  // 自己応答・ループ防止判定
+  const isSelfLoop = (
+    recentBotReplies && recentBotReplies.has(message.content)
+  ) || botTemplates.some(t => message.content.includes(t))
+    || (message.content.includes(botUserName) || message.content.includes(botUserId))
+    || (Array.isArray(urls) && urls.some(url => message.content.includes(url)))
+    || (/検索でヒットした記事をご紹介します|URLのページ内容を要約します|直近URL|ページ内容が取得できませんでした|記事要約中にエラーが発生しました|検索結果が見つかりませんでした/.test(message.content));
+  if (isSelfLoop) {
+    console.log('[無限ループ防止] 自己応答・重複応答を抑止:', message.content);
+    return;
+  }
+  // --- 「静かに」コマンドで10分間応答停止（厳密な正規表現） ---
+  if (/^\s*静かに\s*$/m.test(message.content)) {
     botSilenceUntil = Date.now() + 10 * 60 * 1000;
     await message.reply('10分間森へ遊びに行ってきます…🌲');
     return;
