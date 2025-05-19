@@ -240,6 +240,19 @@ const SHORT_TURNS   = 8;   // ← 直近 8 往復だけ詳細（元は4）
 const memory = new ContextMemory(BASE.SHORT_TERM_MEMORY_LENGTH || 8);
 // runPipeline等でmemory.addMessage('user'|'bot', content)を呼び、プロンプト生成時にmemory.getRecentHistory()を利用
 
+// --- 無限ループ・自己応答防止ロジック ---
+const recentBotReplies = new LRUCache<string, boolean>({ max: 20, ttl: 1000 * 60 * 5 });
+const botTemplates = [
+  '指定されたURLのページ内容を要約します。',
+  '検索でヒットした記事をご紹介します。',
+  'ディープクロールの結果、情報が取得できませんでした。',
+  'ページ内容が取得できませんでした。',
+  '記事要約中にエラーが発生しました。',
+  '検索結果が見つかりませんでした。',
+];
+const botUserName = 'ボッチー';
+const botUserId = '9740'; // 実際はprocess.env.BOT_USER_ID等で取得推奨
+
 // ---------- A.  summary を取ってシステムに渡すヘルパ ----------
 export async function buildHistoryContext(
   supabase: SupabaseClient,
@@ -908,6 +921,8 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
     console.error('[runPipelineエラー]', err);
     await message.reply('エラーが発生しました。管理者にご連絡ください。');
   }
+  // 応答後、内容を記憶
+  recentBotReplies.set(message.content, true);
 }
 
 export async function shouldContextuallyIntervene(history: any[], globalContext: GlobalContext | null = null): Promise<{ intervene: boolean, reason: string }> {
