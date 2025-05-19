@@ -854,9 +854,12 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
     // --- URLが含まれる場合は必ずfetchPageContent＋LLM要約を実行 ---
     const urlRegex = /(https?:\/\/[^\s]+)/g;
     const urls = message.content.match(urlRegex) || [];
-    if (urls.length > 0) {
-      // 1件目のみ要約（複数URL対応は今後拡張可）
-      const url = urls[0];
+    // 直近の応答で出力したURLを記憶するためのセット
+    const recentlyOutputUrls = new Set<string>();
+    // 直近応答で出力したURLは除外
+    const filteredUrls = urls.filter(url => !recentlyOutputUrls.has(url));
+    if (filteredUrls.length > 0) {
+      const url = filteredUrls[0];
       let pageContent = '';
       let errorMsg = '';
       let title = '';
@@ -873,6 +876,7 @@ export async function runPipeline(action: string, { message, flags, supabase }: 
         const llmAnswer = await llmRespond(message.content, prompt, message, [], buildCharacterPrompt(message, affinity));
         memory.addMessage('assistant', intro + '\n' + llmAnswer);
         await message.reply(intro + '\n' + llmAnswer);
+        recentlyOutputUrls.add(url); // 出力したURLを記憶
         if (supabase) await updateAffinity(userId, guildId, message.content);
         if (supabase) await saveHistory(supabase, message, message.content, intro + '\n' + llmAnswer, affinity);
         return;
