@@ -241,7 +241,7 @@ const memory = new ContextMemory(BASE.SHORT_TERM_MEMORY_LENGTH || 8);
 // runPipeline等でmemory.addMessage('user'|'bot', content)を呼び、プロンプト生成時にmemory.getRecentHistory()を利用
 
 // --- 無限ループ・自己応答防止ロジック ---
-const recentBotReplies = new LRUCache<string, boolean>({ max: 20, ttl: 1000 * 60 * 5 });
+export const recentBotReplies = new LRUCache<string, boolean>({ max: 20, ttl: 1000 * 60 * 5 });
 const botTemplates = [
   '指定されたURLのページ内容を要約します。',
   '検索でヒットした記事をご紹介します。',
@@ -692,7 +692,7 @@ async function googleSearch(query: string, attempt: number = 0): Promise<any[]> 
 }
 
 // --- llmRespond: temperature引数追加 ---
-async function llmRespond(prompt: string, systemPrompt: string = "", message: Message | null = null, history: any[] = [], charPrompt: string | null = null, temperature: number = 0.7): Promise<string> {
+export async function llmRespond(prompt: string, systemPrompt: string = "", message: Message | null = null, history: any[] = [], charPrompt: string | null = null, temperature: number = 0.7): Promise<string> {
   const systemCharPrompt = charPrompt ?? (message ? buildCharacterPrompt(message) : "");
   const messages: ChatCompletionMessageParam[] = [
     { role: "system", content: systemCharPrompt + (systemPrompt ? `\n${systemPrompt}` : "") },

@@ -1,15 +1,15 @@
+import 'dotenv/config';
 import { Client, GatewayIntentBits, Partials, ChannelType, Message, Guild, TextChannel } from "discord.js";
 import type { PartialMessage, Interaction, ChatInputCommandInteraction } from "discord.js";
-import dotenv from "dotenv";
+import path from "path";
 import { openai } from './services/openai.js';
 import { supabase } from './services/supabase.js';
 import { detectFlags } from "./flag-detector.js";
 import { pickAction } from "./decision-engine.js";
-import { runPipeline, shouldContextuallyIntervene, buildHistoryContext, getAffinity, buildCharacterPrompt, updateAffinity, saveHistory, deepCrawl, summarizeWebPage, fetchPageContent, enhancedSearch } from "./action-runner.js";
+import { runPipeline, shouldContextuallyIntervene, buildHistoryContext, getAffinity, buildCharacterPrompt, updateAffinity, saveHistory, deepCrawl, summarizeWebPage, fetchPageContent, enhancedSearch, recentBotReplies, llmRespond } from "./action-runner.js";
 import http from 'http';
 import { BOT_CHAT_CHANNEL, MAX_ACTIVE_TURNS, MAX_BOT_CONVO_TURNS, MAX_DAILY_RESPONSES, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END, EMERGENCY_STOP } from './config/index.js';
-
-dotenv.config();
+import { strictWebGroundedSummarize } from "./utils/llmGrounded.js";
 
 process.on('unhandledRejection', (reason, p) => {
   console.error('[UNHANDLED REJECTION]', reason);
@@ -181,11 +181,35 @@ function extractUrls(text: string): string[] {
   return text.match(urlRegex) || [];
 }
 
+// --- 追加: 「静かに」コマンド多重応答防止用 ---
+const lastSilenceCommand = new Map<string, number>();
+
+// --- イベント多重登録防止 ---
+client.removeAllListeners('messageCreate');
+
 client.on("messageCreate", async (message) => {
+  // --- Bot自身の発言には絶対に反応しない ---
+  if (client.user && message.author.id === client.user.id) return;
+
+  // --- 停止中は@メンションでのみ復帰、それ以外は無視 ---
+  if (botSilenceUntil && Date.now() < botSilenceUntil) {
+    if (client.user && message.mentions.has(client.user)) {
+      botSilenceUntil = null;
+      await message.reply('森から帰ってきたよ🌲✨');
+    }
+    return;
+  }
+
+  // --- 「静かに」コマンドで10分間グローバル停止（誰がどこで送っても有効） ---
+  if (/^\s*静かに\s*$/m.test(message.content)) {
+    botSilenceUntil = Date.now() + 10 * 60 * 1000;
+    await message.reply('10分間森へ遊びに行ってきます…🌲');
+    return;
+  }
+
   console.log('[DEBUG] message.content:', message.content);
   const searchKeywords = ["教えて", "特徴", "検索", "調べて", "とは", "まとめ", "要約", "解説"];
   const searchPattern = new RegExp(searchKeywords.join('|'), 'i');
-  console.log('[DEBUG] searchPattern:', searchPattern, 'test:', searchPattern.test(message.content));
   const isBot = message.author.bot;
   const isHuman = !isBot;
   const botId = message.author.id;
@@ -209,82 +233,33 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- 応答停止中の解除判定（メンション時） ---
-  if (botSilenceUntil && client.user && message.mentions.has(client.user)) {
-    if (Date.now() < botSilenceUntil) {
-      botSilenceUntil = null;
-      await message.reply('森から帰ってきたよ🌲✨');
-      return;
-    }
-  }
-
-  // --- 応答停止中は何も返さない ---
-  if (botSilenceUntil && Date.now() < botSilenceUntil) return;
-
-  // --- 無限ループ・自己応答防止（runPipeline呼び出し前） ---
-  const botTemplates = [
-    '指定されたURLのページ内容を要約します。',
-    '検索でヒットした記事をご紹介します。',
-    'ディープクロールの結果、情報が取得できませんでした。',
-    'ページ内容が取得できませんでした。',
-    '記事要約中にエラーが発生しました。',
-    '検索結果が見つかりませんでした。',
-  ];
-  const recentBotReplies = require('./action-runner').recentBotReplies;
-  const botUserName = 'ボッチー';
-  const botUserId = client.user?.id || '';
-  // 自己応答・ループ防止判定
-  const isSelfLoop = (
-    recentBotReplies && recentBotReplies.has(message.content)
-  ) || botTemplates.some(t => message.content.includes(t))
-    || (message.content.includes(botUserName) || message.content.includes(botUserId))
-    || (Array.isArray(urls) && urls.some(url => message.content.includes(url)))
-    || (/検索でヒットした記事をご紹介します|URLのページ内容を要約します|直近URL|ページ内容が取得できませんでした|記事要約中にエラーが発生しました|検索結果が見つかりませんでした/.test(message.content));
-  if (isSelfLoop) {
-    console.log('[無限ループ防止] 自己応答・重複応答を抑止:', message.content);
-    return;
-  }
-  // --- 「静かに」コマンドで10分間応答停止（厳密な正規表現） ---
-  if (/^\s*静かに\s*$/m.test(message.content)) {
-    botSilenceUntil = Date.now() + 10 * 60 * 1000;
-    await message.reply('10分間森へ遊びに行ってきます…🌲');
-    return;
-  }
-
-  // --- URLが含まれていれば即時要約・記憶 ---
+  // --- URLが含まれていれば即時要約・記憶（キャラクター要約のみ・重複禁止） ---
   if (urls.length > 0) {
-    let summarized = '';
-    let crawlError = null;
     try {
-      await message.reply('URLをディープクロール中です…');
-      summarized = await summarizeWebPage(urls[0]);
+      // ユーザー質問部分を抽出
+      let userQuestion = message.content;
+      urls.forEach(url => { userQuestion = userQuestion.replace(url, ''); });
+      userQuestion = userQuestion.replace(/\s+/g, ' ').trim();
+      const summarized = await strictWebGroundedSummarize(urls[0], buildCharacterPrompt(message), userQuestion);
+      recentUrlMap.set(channelId, { url: urls[0], summary: summarized, timestamp: Date.now() });
+      await message.reply(summarized);
     } catch (e) {
-      crawlError = e instanceof Error ? e.message : String(e);
+      await message.reply('Webクロール・要約中にエラーが発生しました。');
+      console.error('[URL要約エラー]', e);
     }
-    if (!summarized || /取得できません|エラー|not found|failed|unavailable/i.test(summarized)) {
-      await message.reply(`Webクロール失敗: ${crawlError || '本文が取得できませんでした。'}`);
-      return;
-    }
-    recentUrlMap.set(channelId, { url: urls[0], summary: summarized, timestamp: Date.now() });
-    await message.reply(`【URLディープクロール要約】\n${summarized.slice(0, 1500)}`);
     return;
   }
 
-  // --- 検索ニーズがある場合（例: "教えて", "特徴", "検索" など） ---
+  // --- 検索キーワードが含まれていれば検索モード ---
   if (searchPattern.test(message.content)) {
-    console.log('[DEBUG] 検索キーワード分岐に到達:', message.content);
-    console.log('[DEBUG] GOOGLE_API_KEY:', process.env.GOOGLE_API_KEY ? 'set' : 'unset');
-    console.log('[DEBUG] GOOGLE_CSE_ID:', process.env.GOOGLE_CSE_ID ? 'set' : 'unset');
+    // 検索モード
     let searchError = null;
     let searchResults = null;
     try {
       await message.reply('Google検索中です…');
-      console.log('[DEBUG] enhancedSearch呼び出し:', message.content);
       searchResults = await enhancedSearch(message.content, message, 0, supabase);
-      console.log('[DEBUG] enhancedSearch結果:', searchResults);
     } catch (e) {
       searchError = e instanceof Error ? e.message : String(e);
-      console.error('[DEBUG] enhancedSearchエラー:', e);
     }
     if (!searchResults || !searchResults.results || !searchResults.results.length) {
       await message.reply(`Google検索失敗: ${searchError || '検索結果が取得できませんでした。'}`);
@@ -345,28 +320,15 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- URLが含まれていない場合、直近URLを文脈として参照 ---
+  // --- 直近URL再要約もキャラクター要約で統一 ---
   const recent = recentUrlMap.get(channelId);
   if (recent && Date.now() - recent.timestamp < 10 * 60 * 1000) { // 10分以内
     if (/続き|詳しく|もっと|解説|再度|もう一度/.test(message.content)) {
       try {
         await message.reply('直近のURLを再チェックします…');
-        const results = await deepCrawl(recent.url, userId, isAdmin);
-        if (!results.length) {
-          await message.reply('直近URLの再チェック結果が取得できませんでした。');
-          return;
-        }
-        const main = results[0];
-        if (!main.content || main.content.replace(/\s/g, '').length < 100) {
-          await message.reply('直近URLの内容が取得できませんでした。');
-          return;
-        }
-        const summarized = await summarizeWebPage(main.content);
-        if (!summarized || /取得できません|エラー|not found|failed|unavailable/i.test(summarized)) {
-          await message.reply('直近URLの内容が取得できませんでした。');
-          return;
-        }
-        await message.reply(`【直近URL再要約】\n${summarized.slice(0, 1500)}`);
+        // 直近再要約時は質問文なし
+        const summarized = await strictWebGroundedSummarize(recent.url, buildCharacterPrompt(message), '');
+        await message.reply(`【直近URL再要約】\n${summarized.slice(0, 7500)}`);
       } catch (e) {
         await message.reply('直近URLの再チェック中にエラーが発生しました。');
         console.error('[recentUrl再チェックエラー]', e);
@@ -378,11 +340,21 @@ client.on("messageCreate", async (message) => {
     (flags as any).recentUrlSummary = recent.summary;
     const action = pickAction(flags);
     if (action) await runPipeline(action, { message, flags, supabase });
+    return;
   }
+
+  // --- LLM応答（重複抑止なし） ---
+  const llmReply = await generateLLMReply(message);
+  await message.reply(llmReply);
 
   // --- それ以外のメッセージは無視 ---
   return;
 });
+
+// LLM応答生成用の関数（既存のrunPipelineやllmRespondをラップ）
+async function generateLLMReply(message: Message) {
+  return await llmRespond(message.content, '', message, [], buildCharacterPrompt(message));
+}
 
 async function getExcitementScoreByAI(history: Message[]): Promise<number> {
   const prompt = `\n以下はDiscordチャンネルの直近の会話履歴です。\nこの会話が「どれくらい盛り上がっているか」を1〜10のスコアで評価してください。\n10: 非常に盛り上がっている（多人数・活発・感情的・話題性あり）\n1: ほぼ盛り上がっていない（静か・単調・反応が薄い）\nスコアのみを半角数字で返してください。\n---\n${history.slice(-20).map(m => m.author.username + ": " + m.content).join("\n")}\n---\n`;
