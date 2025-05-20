@@ -10,6 +10,8 @@ import { runPipeline, shouldContextuallyIntervene, buildHistoryContext, getAffin
 import http from 'http';
 import { BOT_CHAT_CHANNEL, MAX_ACTIVE_TURNS, MAX_BOT_CONVO_TURNS, MAX_DAILY_RESPONSES, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END, EMERGENCY_STOP } from './config/index.js';
 import { strictWebGroundedSummarize } from "./utils/llmGrounded.js";
+import fs from 'fs';
+import yaml from 'js-yaml';
 
 process.on('unhandledRejection', (reason, p) => {
   console.error('[UNHANDLED REJECTION]', reason);
@@ -187,9 +189,43 @@ const lastSilenceCommand = new Map<string, number>();
 // --- イベント多重登録防止 ---
 client.removeAllListeners('messageCreate');
 
+// bocchy-character.yamlのテンプレートを読み込み
+let bocchyConfig: any = {};
+try {
+  bocchyConfig = yaml.load(fs.readFileSync('bocchy-character.yaml', 'utf8'));
+} catch (e) {
+  console.warn('[bocchy-character.yaml読み込み失敗]', e);
+  bocchyConfig = {};
+}
+
+function isSelfIntroductionRequest(text: string): boolean {
+  return /自己紹介|どんなAI|あなたは誰|自己PR/.test(text);
+}
+function isTechnicalFeatureRequest(text: string): boolean {
+  return /技術的特徴|技術仕様|技術的な説明|中身|仕組み|どうやって動いてる/.test(text);
+}
+
 client.on("messageCreate", async (message) => {
   // --- Bot自身の発言には絶対に反応しない ---
   if (client.user && message.author.id === client.user.id) return;
+
+  // --- 「自己紹介」や「技術的特徴」リクエスト時はテンプレートのみ返す ---
+  if (isSelfIntroductionRequest(message.content)) {
+    if (bocchyConfig.self_introduction_template) {
+      await message.reply(bocchyConfig.self_introduction_template);
+    } else {
+      await message.reply('こんにちは、わたしはボッチーです。');
+    }
+    return;
+  }
+  if (isTechnicalFeatureRequest(message.content)) {
+    if (bocchyConfig.technical_features_template) {
+      await message.reply(bocchyConfig.technical_features_template);
+    } else {
+      await message.reply('わたしはLLMと多層記憶を活用したAIチャットボットです。');
+    }
+    return;
+  }
 
   // --- 停止中は@メンションでのみ復帰、それ以外は無視 ---
   if (botSilenceUntil && Date.now() < botSilenceUntil) {
