@@ -205,9 +205,25 @@ function isTechnicalFeatureRequest(text: string): boolean {
   return /技術的特徴|技術仕様|技術的な説明|中身|仕組み|どうやって動いてる/.test(text);
 }
 
+function isTwilightTime(): boolean {
+  const now = getNowJST();
+  const hour = now.getHours();
+  return hour >= 17 && hour < 22;
+}
+
 client.on("messageCreate", async (message) => {
   // --- Bot自身の発言には絶対に反応しない ---
   if (client.user && message.author.id === client.user.id) return;
+
+  // --- トワイライトタイム外は応答しない（自己紹介・技術説明のみ許可） ---
+  if (!isTwilightTime()) {
+    if (isSelfIntroductionRequest(message.content) || isTechnicalFeatureRequest(message.content)) {
+      // テンプレート応答は許可
+    } else {
+      await message.reply('今は"トワイライトタイム（17時～22時）"外なので、お返事はお休み中です🌙');
+      return;
+    }
+  }
 
   // --- 「自己紹介」や「技術的特徴」リクエスト時はテンプレートのみ返す ---
   if (isSelfIntroductionRequest(message.content)) {
