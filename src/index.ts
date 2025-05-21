@@ -216,13 +216,61 @@ client.on("messageCreate", async (message) => {
   if (client.user && message.author.id === client.user.id) return;
 
   // --- トワイライトタイム外は応答しない（自己紹介・技術説明のみ許可） ---
-  if (!isTwilightTime()) {
+  // 人間ユーザーにはトワイライトタイム判定を一切適用しない
+  const isBot = message.author.bot;
+  const channelId = message.channel?.id;
+  const BOT_HARAPPA_ID = '1364622450918424576';
+  if (isBot && client.user && message.author.id !== client.user.id) {
+    // ボット同士の会話は「ボット原っぱ」では常時許可、それ以外はトワイライトタイムのみ許可
+    if (channelId !== BOT_HARAPPA_ID && !isTwilightTime()) {
+      await message.reply('今は"トワイライトタイム（17時～22時）"外なので、ボット同士の会話はお休み中です🌙');
+      return;
+    }
+    // --- 回数制限 ---
+    let state = botConvoState.get(message.author.id) || { turns: 0, dailyCount: 0, lastResetDate: getTodayDate() };
+    if (state.lastResetDate !== getTodayDate()) {
+      state.turns = 0;
+      state.dailyCount = 0;
+      state.lastResetDate = getTodayDate();
+    }
+    if (state.turns >= 2) {
+      console.log(`[b2b制限] ターン上限: botId=${message.author.id}, turns=${state.turns}`);
+      return;
+    }
+    if (state.dailyCount >= 10) {
+      console.log(`[b2b制限] 日次上限: botId=${message.author.id}, dailyCount=${state.dailyCount}`);
+      return;
+    }
+    const flags = detectFlags(message, client);
+    const action = pickAction(flags);
+    if (!action) return;
+    try {
+      await runPipeline(action, { message, flags, supabase });
+    } catch (err) {
+      console.error('[ボット同士応答エラー]', err);
+    }
+    state.turns++;
+    state.dailyCount++;
+    botConvoState.set(message.author.id, state);
+    console.log(`[b2b進行] botId=${message.author.id}, turns=${state.turns}, dailyCount=${state.dailyCount}, hour=${getNowJST().getHours()}`);
+    return;
+  }
+  // --- 人間ユーザーへの応答は常時許可（ただし自己紹介・技術説明はテンプレート優先） ---
+  if (!isBot && !isTwilightTime()) {
     if (isSelfIntroductionRequest(message.content) || isTechnicalFeatureRequest(message.content)) {
       // テンプレート応答は許可
     } else {
-      await message.reply('今は"トワイライトタイム（17時～22時）"外なので、お返事はお休み中です🌙');
-      return;
+      // トワイライトタイム外でも人間には応答する（何もしない）
     }
+  }
+
+  // --- 停止中は@メンションでのみ復帰、それ以外は無視 ---
+  if (botSilenceUntil && Date.now() < botSilenceUntil) {
+    if (client.user && message.mentions.has(client.user)) {
+      botSilenceUntil = null;
+      await message.reply('森から帰ってきたよ🌲✨');
+    }
+    return;
   }
 
   // --- 「自己紹介」や「技術的特徴」リクエスト時はテンプレートのみ返す ---
@@ -243,15 +291,6 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // --- 停止中は@メンションでのみ復帰、それ以外は無視 ---
-  if (botSilenceUntil && Date.now() < botSilenceUntil) {
-    if (client.user && message.mentions.has(client.user)) {
-      botSilenceUntil = null;
-      await message.reply('森から帰ってきたよ🌲✨');
-    }
-    return;
-  }
-
   // --- 「静かに」コマンドで10分間グローバル停止（誰がどこで送っても有効） ---
   if (/^\s*静かに\s*$/m.test(message.content)) {
     botSilenceUntil = Date.now() + 10 * 60 * 1000;
@@ -262,10 +301,8 @@ client.on("messageCreate", async (message) => {
   console.log('[DEBUG] message.content:', message.content);
   const searchKeywords = ["教えて", "特徴", "検索", "調べて", "とは", "まとめ", "要約", "解説"];
   const searchPattern = new RegExp(searchKeywords.join('|'), 'i');
-  const isBot = message.author.bot;
-  const isHuman = !isBot;
+  const isHuman = !message.author.bot;
   const botId = message.author.id;
-  const channelId = message.channel?.id;
   const userId = message.author.id;
   const isAdmin = message.member?.permissions?.has('Administrator') || false;
   const urls = extractUrls(message.content);
@@ -318,57 +355,6 @@ client.on("messageCreate", async (message) => {
       return;
     }
     await message.reply(searchResults.answer);
-    return;
-  }
-
-  // --- 人間の発言には必ず応答（BOT_CHAT_CHANNEL含む） ---
-  if (isHuman) {
-    const flags = detectFlags(message, client);
-    const action = pickAction(flags);
-    if (!action) return;
-    try {
-      await runPipeline(action, { message, flags, supabase });
-    } catch (err) {
-      console.error('[人間応答エラー]', err);
-      await message.reply('エラーが発生しました。管理者にご連絡ください。');
-    }
-    botConvoState.clear();
-    return;
-  }
-
-  // --- ボット同士会話制御（BOT_CHAT_CHANNEL限定） ---
-  if (isBot && channelId === BOT_CHAT_CHANNEL && client.user && botId !== client.user.id) {
-    const hour = getNowJST().getHours();
-    if (hour < RESPONSE_WINDOW_START || hour >= RESPONSE_WINDOW_END) {
-      console.log(`[b2b制限] 時間外: hour=${hour}`);
-      return;
-    }
-    let state = botConvoState.get(botId) || { turns: 0, dailyCount: 0, lastResetDate: getTodayDate() };
-    if (state.lastResetDate !== getTodayDate()) {
-      state.turns = 0;
-      state.dailyCount = 0;
-      state.lastResetDate = getTodayDate();
-    }
-    if (state.turns >= 2) {
-      console.log(`[b2b制限] ターン上限: botId=${botId}, turns=${state.turns}`);
-      return;
-    }
-    if (state.dailyCount >= 10) {
-      console.log(`[b2b制限] 日次上限: botId=${botId}, dailyCount=${state.dailyCount}`);
-      return;
-    }
-    const flags = detectFlags(message, client);
-    const action = pickAction(flags);
-    if (!action) return;
-    try {
-      await runPipeline(action, { message, flags, supabase });
-    } catch (err) {
-      console.error('[ボット同士応答エラー]', err);
-    }
-    state.turns++;
-    state.dailyCount++;
-    botConvoState.set(botId, state);
-    console.log(`[b2b進行] botId=${botId}, turns=${state.turns}, dailyCount=${state.dailyCount}, hour=${hour}`);
     return;
   }
 
