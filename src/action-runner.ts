@@ -771,10 +771,11 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
     return words.filter(w => w.length > 1);
   }
   const mainKeywords = extractMainKeywords(userPrompt);
-  // --- 検索結果が主題に合うか判定 ---
-  const relevantResults = topResults.filter(r =>
-    mainKeywords.some(kw => r.title.includes(kw) || r.snippet.includes(kw))
-  );
+  // --- 検索結果が主題に合うか判定（2つ以上の主要キーワードが含まれる場合のみ） ---
+  const relevantResults = topResults.filter(r => {
+    const hitCount = mainKeywords.filter(kw => r.title.includes(kw) || r.snippet.includes(kw)).length;
+    return hitCount >= 2;
+  });
   // --- 公式・信頼できるドメインのみ優先 ---
   function isTrustedDomain(link: string): boolean {
     return /google\\.com|cloud\\.google\\.com|developers\\.google\\.com|ai\\.google\\.com|wikipedia\\.org|docs\\.google\\.com/.test(link);
@@ -798,13 +799,13 @@ GoogleのAIやクラウド関連サービスの全体像は、
 もし特に知りたいサービスや使い方があれば、追加でご質問ください。`;
   }
 
-  if (relevantResults.length === 0) {
-    // どれも主題に合わない場合は知識ベース回答
+  // --- trustedResultsが空なら知識ベース回答のみ返す ---
+  if (trustedResults.length === 0) {
     return { answer: getKnowledgeBaseAnswer(userPrompt), results: [] };
   }
 
-  // --- 出典リンクは信頼できるもののみ表示（なければrelevantResults全部） ---
-  const finalResults = trustedResults.length > 0 ? trustedResults : relevantResults;
+  // --- 出典リンクは信頼できるもののみ表示 ---
+  const finalResults = trustedResults;
 
   let intro = `検索でヒットした記事をご紹介します。\n`;
   finalResults.forEach((r, idx) => {
