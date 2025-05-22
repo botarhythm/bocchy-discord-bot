@@ -627,6 +627,7 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
   let seenLinks = new Set();
   let seenDomains = new Set();
   let results = await googleSearch(query);
+  console.debug('[enhancedSearch] googleSearch結果:', results);
   if (results && results.length > 0) {
     for (const r of results) {
       const domain = r.link.match(/^https?:\/\/(.*?)(\/|$)/)?.[1] || '';
@@ -640,6 +641,7 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
   }
   // --- 検索結果0件 ---
   if (allResults.length === 0) {
+    console.debug('[enhancedSearch] allResultsが空: 検索結果0件');
     return { answer: '検索結果が見つかりませんでした。キーワードや表記を変えて再度お試しください。', results: [] };
   }
   // --- 検索結果1件以上 ---
@@ -650,16 +652,20 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
     return words.filter(w => w.length > 1);
   }
   const mainKeywords = extractMainKeywords(userPrompt);
+  console.debug('[enhancedSearch] mainKeywords:', mainKeywords);
   // --- 検索結果が主題に合うか判定（2つ以上の主要キーワードが含まれる場合のみ） ---
   const relevantResults = topResults.filter(r => {
     const hitCount = mainKeywords.filter(kw => r.title.includes(kw) || r.snippet.includes(kw)).length;
+    console.debug(`[enhancedSearch] resultタイトル: ${r.title}, スニペット: ${r.snippet}, hitCount: ${hitCount}`);
     return hitCount >= 2;
   });
+  console.debug('[enhancedSearch] relevantResults:', relevantResults);
   // --- 公式・信頼できるドメインのみ優先 ---
   function isTrustedDomain(link: string): boolean {
     return /google\\.com|cloud\\.google\\.com|developers\\.google\\.com|ai\\.google\\.com|wikipedia\\.org|docs\\.google\\.com/.test(link);
   }
   const trustedResults = relevantResults.filter(r => isTrustedDomain(r.link));
+  console.debug('[enhancedSearch] trustedResults:', trustedResults);
   // --- 知識ベース回答（暫定: Google AI/クラウド系の例） ---
   function getKnowledgeBaseAnswer(userPrompt: string): string {
     return `ご質問の内容について、公式・信頼できる情報源から有益な検索結果が見つかりませんでした。\n\nGoogleのAIやクラウド関連サービスの全体像は、\n- Google Cloud Platform（GCP）: インフラ全般\n- Vertex AI: AI開発・運用\n- Google AI: AI技術・API\n- Google Developer Console: 管理画面\n- Google Workspace: 業務ツール\n\nのように整理できます。\n\nもし特に知りたいサービスや使い方があれば、追加でご質問ください。`;
@@ -897,7 +903,7 @@ export async function googleSearch(query: string, attempt: number = 0): Promise<
       return [];
     }
     const data = await res.json() as any;
-    console.debug('[googleSearch] APIレスポンス:', JSON.stringify(data).slice(0, 500));
+    console.debug('[googleSearch] APIレスポンス全体:', JSON.stringify(data));
     if (!data.items || data.items.length === 0) {
       if (data.error) {
         console.warn(`[googleSearch] Google APIレスポンスエラー:`, data.error, '空配列を返します');
