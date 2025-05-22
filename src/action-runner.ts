@@ -653,16 +653,16 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
   }
   const mainKeywords = extractMainKeywords(userPrompt);
   console.debug('[enhancedSearch] mainKeywords:', mainKeywords);
-  // --- 検索結果が主題に合うか判定（2つ以上の主要キーワードが含まれる場合のみ） ---
+  // --- 検索結果が主題に合うか判定（1つ以上の主要キーワードが含まれる場合のみ） ---
   const relevantResults = topResults.filter(r => {
     const hitCount = mainKeywords.filter(kw => r.title.includes(kw) || r.snippet.includes(kw)).length;
     console.debug(`[enhancedSearch] resultタイトル: ${r.title}, スニペット: ${r.snippet}, hitCount: ${hitCount}`);
-    return hitCount >= 2;
+    return hitCount >= 1;
   });
   console.debug('[enhancedSearch] relevantResults:', relevantResults);
   // --- 公式・信頼できるドメインのみ優先 ---
   function isTrustedDomain(link: string): boolean {
-    return /google\\.com|cloud\\.google\\.com|developers\\.google\\.com|ai\\.google\\.com|wikipedia\\.org|docs\\.google\\.com/.test(link);
+    return /google\.com|cloud\.google\.com|developers\.google\.com|ai\.google\.com|wikipedia\.org|docs\.google\.com|tenki\.jp|weathernews\.jp|yahoo\.co\.jp/.test(link);
   }
   const trustedResults = relevantResults.filter(r => isTrustedDomain(r.link));
   console.debug('[enhancedSearch] trustedResults:', trustedResults);
