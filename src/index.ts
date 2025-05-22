@@ -214,6 +214,20 @@ function isTwilightTime(): boolean {
 // --- トワイライトタイム外通知: 1時間に1回/チャンネル ---
 const lastTwilightNotice = new Map<string, number>(); // channelId => timestamp(ms)
 
+// --- Discord 2000文字制限対応: 長文分割送信ユーティリティ ---
+async function sendLongReply(message: Message, content: string) {
+  const MAX_LEN = 2000;
+  if (content.length <= MAX_LEN) {
+    await message.reply(content);
+    return;
+  }
+  let i = 0;
+  while (i < content.length) {
+    await message.reply(content.slice(i, i + MAX_LEN));
+    i += MAX_LEN;
+  }
+}
+
 client.on("messageCreate", async (message) => {
   // --- Bot自身の発言には絶対に反応しない ---
   if (client.user && message.author.id === client.user.id) return;
@@ -230,7 +244,7 @@ client.on("messageCreate", async (message) => {
       const now = Date.now();
       const lastNotice = lastTwilightNotice.get(channelId) || 0;
       if (now - lastNotice > 60 * 60 * 1000) {
-        await message.reply('今はトワイライトタイム（17時～22時）ではないのでボットには返答しません。');
+        await sendLongReply(message, '今はトワイライトタイム（17時～22時）ではないのでボットには返答しません。');
         lastTwilightNotice.set(channelId, now);
       }
       return;
@@ -277,7 +291,7 @@ client.on("messageCreate", async (message) => {
   if (botSilenceUntil && Date.now() < botSilenceUntil) {
     if (client.user && message.mentions.has(client.user)) {
       botSilenceUntil = null;
-      await message.reply('森から帰ってきたよ🌲✨');
+      await sendLongReply(message, '森から帰ってきたよ🌲✨');
     }
     return;
   }
@@ -285,17 +299,17 @@ client.on("messageCreate", async (message) => {
   // --- 「自己紹介」や「技術的特徴」リクエスト時はテンプレートのみ返す ---
   if (isSelfIntroductionRequest(message.content)) {
     if (bocchyConfig.self_introduction_template) {
-      await message.reply(bocchyConfig.self_introduction_template);
+      await sendLongReply(message, bocchyConfig.self_introduction_template);
     } else {
-      await message.reply('こんにちは、わたしはボッチーです。');
+      await sendLongReply(message, 'こんにちは、わたしはボッチーです。');
     }
     return;
   }
   if (isTechnicalFeatureRequest(message.content)) {
     if (bocchyConfig.technical_features_template) {
-      await message.reply(bocchyConfig.technical_features_template);
+      await sendLongReply(message, bocchyConfig.technical_features_template);
     } else {
-      await message.reply('わたしはLLMと多層記憶を活用したAIチャットボットです。');
+      await sendLongReply(message, 'わたしはLLMと多層記憶を活用したAIチャットボットです。');
     }
     return;
   }
@@ -303,7 +317,7 @@ client.on("messageCreate", async (message) => {
   // --- 「静かに」コマンドで10分間グローバル停止（誰がどこで送っても有効） ---
   if (/^\s*静かに\s*$/m.test(message.content)) {
     botSilenceUntil = Date.now() + 10 * 60 * 1000;
-    await message.reply('10分間森へ遊びに行ってきます…🌲');
+    await sendLongReply(message, '10分間森へ遊びに行ってきます…🌲');
     return;
   }
 
@@ -326,7 +340,7 @@ client.on("messageCreate", async (message) => {
       await runPipeline(action, { message, flags, supabase });
     } catch (err) {
       console.error('[DM応答エラー]', err);
-      await message.reply('エラーが発生しました。管理者にご連絡ください。');
+      await sendLongReply(message, 'エラーが発生しました。管理者にご連絡ください。');
     }
     return;
   }
@@ -340,9 +354,9 @@ client.on("messageCreate", async (message) => {
       userQuestion = userQuestion.replace(/\s+/g, ' ').trim();
       const summarized = await strictWebGroundedSummarize(urls[0], buildCharacterPrompt(message), userQuestion);
       recentUrlMap.set(channelId, { url: urls[0], summary: summarized, timestamp: Date.now() });
-      await message.reply(summarized);
+      await sendLongReply(message, summarized);
     } catch (e) {
-      await message.reply('Webクロール・要約中にエラーが発生しました。');
+      await sendLongReply(message, 'Webクロール・要約中にエラーが発生しました。');
       console.error('[URL要約エラー]', e);
     }
     return;
@@ -354,16 +368,16 @@ client.on("messageCreate", async (message) => {
     let searchError = null;
     let searchResults = null;
     try {
-      await message.reply('Google検索中です…');
+      await sendLongReply(message, 'Google検索中です…');
       searchResults = await enhancedSearch(message.content, message, 0, supabase);
     } catch (e) {
       searchError = e instanceof Error ? e.message : String(e);
     }
     if (!searchResults || !searchResults.results || !searchResults.results.length) {
-      await message.reply(`Google検索失敗: ${searchError || '検索結果が取得できませんでした。'}`);
+      await sendLongReply(message, `Google検索失敗: ${searchError || '検索結果が取得できませんでした。'}`);
       return;
     }
-    await message.reply(searchResults.answer);
+    await sendLongReply(message, searchResults.answer);
     return;
   }
 
@@ -372,12 +386,12 @@ client.on("messageCreate", async (message) => {
   if (recent && Date.now() - recent.timestamp < 10 * 60 * 1000) { // 10分以内
     if (/続き|詳しく|もっと|解説|再度|もう一度/.test(message.content)) {
       try {
-        await message.reply('直近のURLを再チェックします…');
+        await sendLongReply(message, '直近のURLを再チェックします…');
         // 直近再要約時は質問文なし
         const summarized = await strictWebGroundedSummarize(recent.url, buildCharacterPrompt(message), '');
-        await message.reply(`【直近URL再要約】\n${summarized.slice(0, 7500)}`);
+        await sendLongReply(message, `【直近URL再要約】\n${summarized.slice(0, 7500)}`);
       } catch (e) {
-        await message.reply('直近URLの再チェック中にエラーが発生しました。');
+        await sendLongReply(message, '直近URLの再チェック中にエラーが発生しました。');
         console.error('[recentUrl再チェックエラー]', e);
       }
       return;
@@ -392,7 +406,7 @@ client.on("messageCreate", async (message) => {
 
   // --- LLM応答（重複抑止なし） ---
   const llmReply = await generateLLMReply(message);
-  await message.reply(llmReply);
+  await sendLongReply(message, llmReply);
 
   // --- それ以外のメッセージは無視 ---
   return;
