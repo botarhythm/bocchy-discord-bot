@@ -644,60 +644,29 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
     console.debug('[enhancedSearch] allResultsが空: 検索結果0件');
     return { answer: '検索結果が見つかりませんでした。キーワードや表記を変えて再度お試しください。', results: [] };
   }
-  // --- 正規表現エスケープユーティリティ ---
-  function escapeRegExp(string: string): string {
-    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-  // --- 検索結果1件以上 ---
-  const topResults = allResults.slice(0, 10);
-  // --- 主要キーワード抽出（簡易: ユーザー質問の名詞・英単語を抽出、汎用ワード除外） ---
-  function extractMainKeywords(text: string): string[] {
-    const words = text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}a-zA-Z0-9_\-]{2,}/gu) || [];
-    // 検索・して・教えて等の汎用ワードは除外
-    const stopwords = ['検索', 'して', '教えて', 'まとめて', 'ほしい', '知りたい', '調べて', 'ください'];
-    return words.filter(w => w.length > 1 && !stopwords.includes(w));
-  }
-  const mainKeywords = extractMainKeywords(userPrompt);
-  console.debug('[enhancedSearch] mainKeywords:', mainKeywords);
-  // --- 検索結果が主題に合うか判定（1つ以上の主要キーワードが部分一致すればOK） ---
-  const relevantResults = topResults.filter(r => {
-    const hitCount = mainKeywords.filter(kw => {
-      const re = new RegExp(escapeRegExp(kw));
-      return re.test(r.title) || re.test(r.snippet);
-    }).length;
-    console.debug(`[enhancedSearch] resultタイトル: ${r.title}, スニペット: ${r.snippet}, hitCount: ${hitCount}`);
-    return hitCount >= 1;
-  });
-  console.debug('[enhancedSearch] relevantResults:', relevantResults);
-  // --- 公式・信頼できるドメインのみ優先 ---
-  function isTrustedDomain(link: string): boolean {
-    return /google\.com|cloud\.google\.com|developers\.google\.com|ai\.google\.com|wikipedia\.org|docs\.google\.com|tenki\.jp|weathernews\.jp|yahoo\.co\.jp/.test(link);
-  }
-  const trustedResults = relevantResults.filter(r => isTrustedDomain(r.link));
-  console.debug('[enhancedSearch] trustedResults:', trustedResults);
-  // --- relevantResultsが空の場合はtrustedResultsまたは天気系ドメインを優先して出力 ---
-  let finalResults = trustedResults;
-  if (finalResults.length === 0) {
-    // trustedResultsが空なら天気系ドメインを優先
-    finalResults = topResults.filter(r => /tenki\.jp|weathernews\.jp|yahoo\.co\.jp/.test(r.link));
-    if (finalResults.length === 0) {
-      // それもなければallResultsから最大3件
-      finalResults = allResults.slice(0, 3);
-    }
-  }
+  // --- 検索結果1件以上: finalResultsが1件でもあれば必ずLLM要約を実行 ---
   let intro = `検索でヒットした記事をご紹介します。\n`;
+  const finalResults = allResults.slice(0, 10);
   finalResults.forEach((r, idx) => {
     intro += `\n${idx+1}. タイトル: ${r.title}\nスニペット: ${r.snippet}\nURL: ${r.link}\n`;
   });
   if (useMarkdown) intro += '\n\n【出力形式】Markdownで見やすくまとめてください。';
   let prompt = `${intro}\n\nこれらの記事の内容を簡単に要約し、どんな情報が得られるかを説明してください。`;
   let llmAnswer = '';
-  try {
-    llmAnswer = await llmRespond(userPrompt, prompt, message, [], buildCharacterPrompt(message, affinity));
-  } catch (e) {
-    llmAnswer = '記事要約中にエラーが発生しました。記事リストのみご参照ください。';
+  if (finalResults.length > 0) {
+    try {
+      llmAnswer = await llmRespond(userPrompt, prompt, message, [], buildCharacterPrompt(message, affinity));
+    } catch (e) {
+      llmAnswer = '記事要約中にエラーが発生しました。記事リストのみご参照ください。';
+    }
+    return { answer: intro + '\n' + llmAnswer, results: finalResults };
+  } else {
+    // 0件のときのみ知識ベース回答や「検索結果が見つかりませんでした」
+    function getKnowledgeBaseAnswer(userPrompt: string): string {
+      return `ご質問の内容について、公式・信頼できる情報源から有益な検索結果が見つかりませんでした。\n\nもし特に知りたいサービスや使い方があれば、追加でご質問ください。`;
+    }
+    return { answer: getKnowledgeBaseAnswer(userPrompt), results: [] };
   }
-  return { answer: intro + '\n' + llmAnswer, results: finalResults };
 }
 
 // --- saveHistory: 履歴保存の簡易実装 ---
