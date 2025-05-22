@@ -762,8 +762,52 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
   }
   // --- 検索結果1件以上 ---
   const topResults = allResults.slice(0, 3);
+
+  // --- 主要キーワード抽出（簡易: ユーザー質問の名詞・英単語を抽出） ---
+  function extractMainKeywords(text: string): string[] {
+    // 日本語の名詞・英単語を抽出（簡易実装）
+    const words = text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}a-zA-Z0-9_\-]{2,}/gu) || [];
+    // 例: "Google Cloud Vertex AI" → ["Google", "Cloud", "Vertex", "AI"]
+    return words.filter(w => w.length > 1);
+  }
+  const mainKeywords = extractMainKeywords(userPrompt);
+  // --- 検索結果が主題に合うか判定 ---
+  const relevantResults = topResults.filter(r =>
+    mainKeywords.some(kw => r.title.includes(kw) || r.snippet.includes(kw))
+  );
+  // --- 公式・信頼できるドメインのみ優先 ---
+  function isTrustedDomain(link: string): boolean {
+    return /google\\.com|cloud\\.google\\.com|developers\\.google\\.com|ai\\.google\\.com|wikipedia\\.org|docs\\.google\\.com/.test(link);
+  }
+  const trustedResults = relevantResults.filter(r => isTrustedDomain(r.link));
+
+  // --- 知識ベース回答（暫定: Google AI/クラウド系の例） ---
+  function getKnowledgeBaseAnswer(userPrompt: string): string {
+    // ここは本来LLMやFAQ DB参照だが、暫定で例文
+    return `ご質問の内容について、公式・信頼できる情報源から有益な検索結果が見つかりませんでした。
+
+GoogleのAIやクラウド関連サービスの全体像は、
+- Google Cloud Platform（GCP）: インフラ全般
+- Vertex AI: AI開発・運用
+- Google AI: AI技術・API
+- Google Developer Console: 管理画面
+- Google Workspace: 業務ツール
+
+のように整理できます。
+
+もし特に知りたいサービスや使い方があれば、追加でご質問ください。`;
+  }
+
+  if (relevantResults.length === 0) {
+    // どれも主題に合わない場合は知識ベース回答
+    return { answer: getKnowledgeBaseAnswer(userPrompt), results: [] };
+  }
+
+  // --- 出典リンクは信頼できるもののみ表示（なければrelevantResults全部） ---
+  const finalResults = trustedResults.length > 0 ? trustedResults : relevantResults;
+
   let intro = `検索でヒットした記事をご紹介します。\n`;
-  topResults.forEach((r, idx) => {
+  finalResults.forEach((r, idx) => {
     intro += `\n${idx+1}. タイトル: ${r.title}\nスニペット: ${r.snippet}\nURL: ${r.link}\n`;
   });
   if (useMarkdown) intro += '\n\n【出力形式】Markdownで見やすくまとめてください。';
@@ -774,9 +818,8 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
   } catch (e) {
     llmAnswer = '記事要約中にエラーが発生しました。記事リストのみご参照ください。';
   }
-  return { answer: intro + '\n' + llmAnswer, results: topResults };
+  return { answer: intro + '\n' + llmAnswer, results: finalResults };
 }
-
 // --- saveHistory: 履歴保存の簡易実装 ---
 export async function saveHistory(supabase: SupabaseClient, message: Message, userMsg: string, botMsg: string, affinity: number): Promise<void> {
   if (!supabase) return;
