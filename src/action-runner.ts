@@ -644,8 +644,12 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
     console.debug('[enhancedSearch] allResultsが空: 検索結果0件');
     return { answer: '検索結果が見つかりませんでした。キーワードや表記を変えて再度お試しください。', results: [] };
   }
+  // --- 正規表現エスケープユーティリティ ---
+  function escapeRegExp(string: string): string {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
   // --- 検索結果1件以上 ---
-  const topResults = allResults.slice(0, 3);
+  const topResults = allResults.slice(0, 10);
   // --- 主要キーワード抽出（簡易: ユーザー質問の名詞・英単語を抽出、汎用ワード除外） ---
   function extractMainKeywords(text: string): string[] {
     const words = text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}a-zA-Z0-9_\-]{2,}/gu) || [];
@@ -658,7 +662,7 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
   // --- 検索結果が主題に合うか判定（1つ以上の主要キーワードが部分一致すればOK） ---
   const relevantResults = topResults.filter(r => {
     const hitCount = mainKeywords.filter(kw => {
-      const re = new RegExp(kw);
+      const re = new RegExp(escapeRegExp(kw));
       return re.test(r.title) || re.test(r.snippet);
     }).length;
     console.debug(`[enhancedSearch] resultタイトル: ${r.title}, スニペット: ${r.snippet}, hitCount: ${hitCount}`);
@@ -671,14 +675,16 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
   }
   const trustedResults = relevantResults.filter(r => isTrustedDomain(r.link));
   console.debug('[enhancedSearch] trustedResults:', trustedResults);
-  // --- 知識ベース回答（暫定: Google AI/クラウド系の例） ---
-  function getKnowledgeBaseAnswer(userPrompt: string): string {
-    return `ご質問の内容について、公式・信頼できる情報源から有益な検索結果が見つかりませんでした。\n\nGoogleのAIやクラウド関連サービスの全体像は、\n- Google Cloud Platform（GCP）: インフラ全般\n- Vertex AI: AI開発・運用\n- Google AI: AI技術・API\n- Google Developer Console: 管理画面\n- Google Workspace: 業務ツール\n\nのように整理できます。\n\nもし特に知りたいサービスや使い方があれば、追加でご質問ください。`;
+  // --- relevantResultsが空の場合はtrustedResultsまたは天気系ドメインを優先して出力 ---
+  let finalResults = trustedResults;
+  if (finalResults.length === 0) {
+    // trustedResultsが空なら天気系ドメインを優先
+    finalResults = topResults.filter(r => /tenki\.jp|weathernews\.jp|yahoo\.co\.jp/.test(r.link));
+    if (finalResults.length === 0) {
+      // それもなければallResultsから最大3件
+      finalResults = allResults.slice(0, 3);
+    }
   }
-  if (trustedResults.length === 0) {
-    return { answer: getKnowledgeBaseAnswer(userPrompt), results: [] };
-  }
-  const finalResults = trustedResults;
   let intro = `検索でヒットした記事をご紹介します。\n`;
   finalResults.forEach((r, idx) => {
     intro += `\n${idx+1}. タイトル: ${r.title}\nスニペット: ${r.snippet}\nURL: ${r.link}\n`;
