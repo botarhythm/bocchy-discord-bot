@@ -729,9 +729,8 @@ function appendDateAndImpactWordsIfNeeded(userPrompt: string, query: string): st
   return newQuery.trim();
 }
 
-// --- クエリ主導型: 検索・クロール命令が含まれる場合は必ず検索・クロールを実行 ---
 // 明示的な検索ワードのみで判定し、曖昧な表現は除外
-function isExplicitSearchRequest(text: string): boolean {
+export function isExplicitSearchRequest(text: string): boolean {
   // 明示的な検索ワードのみ
   const searchWords = /(検索|調べて|ニュース|速報|リサーチ|見つけて|天気|URL|リンク|Web|ウェブ|サイト|ページ|情報)/i;
   // 検索を発動しない除外ワード
