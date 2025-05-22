@@ -730,11 +730,13 @@ function appendDateAndImpactWordsIfNeeded(userPrompt: string, query: string): st
 }
 
 // --- クエリ主導型: 検索・クロール命令が含まれる場合は必ず検索・クロールを実行 ---
-// 旧: if (/(検索|調べて|天気|ニュース|速報|URL|リンク|要約|まとめて|Web|web|ウェブ|サイト|ページ|情報|教えて|見つけて|リサーチ)/i.test(message.content)) {
-// 新: 明示的な検索ワードのみで判定
+// 明示的な検索ワードのみで判定し、曖昧な表現は除外
 function isExplicitSearchRequest(text: string): boolean {
-  // 検索・調査・ニュース・要約など明示的なワードのみ
-  return /(検索|調べて|天気|ニュース|速報|URL|リンク|要約|まとめて|Web|web|ウェブ|サイト|ページ|情報|見つけて|リサーチ)/i.test(text);
+  // 明示的な検索ワードのみ
+  const searchWords = /(検索|調べて|ニュース|速報|リサーチ|見つけて|天気|URL|リンク|Web|ウェブ|サイト|ページ|情報)/i;
+  // 検索を発動しない除外ワード
+  const excludeWords = /(教えて|教えてほしい|整理して|まとめて|説明して|わからん|知りたい|ほしい)/i;
+  return searchWords.test(text) && !excludeWords.test(text);
 }
 
 // ---- 新: ChatGPT風・自然なWeb検索体験 ----
