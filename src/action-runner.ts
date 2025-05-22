@@ -738,6 +738,11 @@ export function isExplicitSearchRequest(text: string): boolean {
   return searchWords.test(text) && !excludeWords.test(text);
 }
 
+// --- 検索意図判定: 検索トリガーワードが1つでも含まれていれば必ずWeb検索を発動 ---
+export function isSearchIntent(text: string): boolean {
+  return /(検索|調べて|ニュース|速報|リサーチ|見つけて|天気|URL|リンク|Web|ウェブ|サイト|ページ|情報)/i.test(text);
+}
+
 // ---- 新: ChatGPT風・自然なWeb検索体験 ----
 export async function enhancedSearch(userPrompt: string, message: Message, affinity: number, supabase: SupabaseClient): Promise<{ answer: string, results: any[] }> {
   console.debug('[enhancedSearch] 入力:', { userPrompt, affinity });
