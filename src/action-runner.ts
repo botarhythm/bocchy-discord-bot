@@ -5,7 +5,6 @@ import { load } from 'cheerio';
 import { OpenAI } from 'openai';
 import yaml from 'js-yaml';
 import fs from 'fs';
-import { getAffinity, updateAffinity } from './utils/affinity.js';
 import { getSentiment } from './utils/sentimentAnalyzer.js';
 import { analyzeGlobalContext } from './utils/analyzeGlobalContext.js';
 import { reflectiveCheck } from './utils/reflectiveCheck.js';
@@ -169,14 +168,22 @@ function getUserDisplayName(message: Message | ChatInputCommandInteraction): str
   return message.user?.globalName || message.user?.username || message.author?.globalName || message.author?.username;
 }
 
-function buildCharacterPrompt(
+// affinity
+export async function getAffinity(userId: string, guildId: string): Promise<number> {
+  return (await import('./utils/affinity.js')).getAffinity(userId, guildId);
+}
+export async function updateAffinity(userId: string, guildId: string, userMsg: string): Promise<void> {
+  return (await import('./utils/affinity.js')).updateAffinity(userId, guildId, userMsg);
+}
+
+// buildCharacterPrompt
+export function buildCharacterPrompt(
   message: Message | ChatInputCommandInteraction,
   affinity: number = 0,
   userProfile: UserProfile | null = null,
   globalContext: GlobalContext | null = null
 ): string {
   let prompt = '';
-  // v2.0仕様に基づくプロンプト構築
   if (bocchyConfig.mission) {
     prompt += `【ミッション】${bocchyConfig.mission}\n`;
   }
@@ -198,47 +205,20 @@ function buildCharacterPrompt(
   if (bocchyConfig.output_preferences?.emoji_usage) {
     prompt += `【絵文字使用】${bocchyConfig.output_preferences.emoji_usage}\n`;
   }
-  // 現在日時（日本時間）
   const now = new Date();
   const jpTime = now.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
   prompt += `【現在日時】${jpTime}（日本時間）\n`;
-  // ユーザー呼称
   const userDisplayName = getUserDisplayName(message);
   prompt += `【ユーザー情報】この会話の相手は「${userDisplayName}」さんです。応答文の適切な位置で「${userDisplayName}さん」と呼びかけ、親しみやすい文体で返答してください。\n`;
-  // 一人称
   if (bocchyConfig.first_person) {
     prompt += `【一人称】${bocchyConfig.first_person}\n`;
   }
-  // 親密度による心理距離
   const relation =
     affinity > 0.6 ? 'とても親しい' :
     affinity < -0.4 ? '距離がある' : '普通';
   prompt += `【心理距離】${relation}\n`;
-  // ユーザープロファイル・好み・傾向
-  if (userProfile && userProfile.preferences) {
-    prompt += `【ユーザーの好み・傾向】${JSON.stringify(userProfile.preferences)}\n`;
-  }
-  if (userProfile && userProfile.profile_summary) {
-    prompt += `【会話傾向・要望】${userProfile.profile_summary}\n`;
-  }
-  // 会話全体の感情トーン・主な話題
-  if (globalContext) {
-    if (globalContext.tone) {
-      prompt += `【会話全体の感情トーン】${globalContext.tone}\n`;
-    }
-    if (globalContext.topics && globalContext.topics.length > 0) {
-      prompt += `【最近よく話題にしているテーマ】${globalContext.topics.join('、')}\n`;
-    }
-  }
   return prompt;
 }
-
-// ---------- 0. 定数 ----------
-const SHORT_TURNS   = 8;   // ← 直近 8 往復だけ詳細（元は4）
-
-// --- 短期記憶バッファ（ContextMemory） ---
-const memory = new ContextMemory(BASE.SHORT_TERM_MEMORY_LENGTH || 8);
-// runPipeline等でmemory.addMessage('user'|'bot', content)を呼び、プロンプト生成時にmemory.getRecentHistory()を利用
 
 // --- 無限ループ・自己応答防止ロジック ---
 export const recentBotReplies = new LRUCache<string, boolean>({ max: 20, ttl: 1000 * 60 * 5 });
@@ -750,7 +730,7 @@ function appendDateAndImpactWordsIfNeeded(userPrompt: string, query: string): st
 }
 
 // ---- 新: ChatGPT風・自然なWeb検索体験 ----
-async function enhancedSearch(userPrompt: string, message: Message, affinity: number, supabase: SupabaseClient): Promise<{ answer: string, results: any[] }> {
+export async function enhancedSearch(userPrompt: string, message: Message, affinity: number, supabase: SupabaseClient): Promise<{ answer: string, results: any[] }> {
   console.debug('[enhancedSearch] 入力:', { userPrompt, affinity });
   const useMarkdown = bocchyConfig.output_preferences?.format === 'markdown';
   // 検索クエリはユーザー原文そのまま
@@ -798,13 +778,12 @@ async function enhancedSearch(userPrompt: string, message: Message, affinity: nu
 }
 
 // --- saveHistory: 履歴保存の簡易実装 ---
-async function saveHistory(supabase: SupabaseClient, message: Message, userMsg: string, botMsg: string, affinity: number): Promise<void> {
+export async function saveHistory(supabase: SupabaseClient, message: Message, userMsg: string, botMsg: string, affinity: number): Promise<void> {
   if (!supabase) return;
   try {
     const userId = message.author.id;
     const channelId = message.channel?.id;
     const guildId = message.guild?.id || '';
-    // conversation_historiesに追記
     await supabase.from('conversation_histories').upsert([
       {
         user_id: userId,
@@ -854,6 +833,7 @@ export async function runPipeline(action: string, { message, flags, supabase, bo
     let history: any[] = [];
     let systemCharPrompt = '';
     // --- 短期記憶バッファにユーザー発話を記録 ---
+    const memory = new ContextMemory(BASE.SHORT_TERM_MEMORY_LENGTH || 8);
     memory.addMessage('user', message.content);
 
     // --- テスト仕様同期コメント ---
@@ -915,7 +895,7 @@ export async function runPipeline(action: string, { message, flags, supabase, bo
       prompt = '';
     } else {
       // --- 短期記憶バッファから履歴を取得し、'bot'→'assistant'に変換 ---
-      history = memory.getRecentHistory().map(h => h.role === 'bot' ? { ...h, role: 'assistant' } : h);
+      history = memory.getRecentHistory().map((h: any) => h.role === 'bot' ? { ...h, role: 'assistant' } : h);
     }
     // 5. LLM応答生成
     const answer = await llmRespond(userPrompt, systemCharPrompt + systemPrompt + prompt, message, history);
@@ -963,14 +943,10 @@ export async function shouldContextuallyIntervene(history: any[], globalContext:
   }
 }
 
-export { enhancedSearch };
-
 async function getGuildMemberNames(guild: Guild, limit: number): Promise<string[]> {
   // TODO: 本実装ではguild.members.fetch()等で取得
   return [];
 }
-
-export { getAffinity, buildCharacterPrompt, updateAffinity, saveHistory };
 
 // deepCrawlの結果をユーザーに返すための新しい関数
 export async function replyDeepCrawlSummary(url: string, userPrompt: string, message: Message, affinity: number) {
