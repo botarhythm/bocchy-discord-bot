@@ -729,6 +729,14 @@ function appendDateAndImpactWordsIfNeeded(userPrompt: string, query: string): st
   return newQuery.trim();
 }
 
+// --- クエリ主導型: 検索・クロール命令が含まれる場合は必ず検索・クロールを実行 ---
+// 旧: if (/(検索|調べて|天気|ニュース|速報|URL|リンク|要約|まとめて|Web|web|ウェブ|サイト|ページ|情報|教えて|見つけて|リサーチ)/i.test(message.content)) {
+// 新: 明示的な検索ワードのみで判定
+function isExplicitSearchRequest(text: string): boolean {
+  // 検索・調査・ニュース・要約など明示的なワードのみ
+  return /(検索|調べて|天気|ニュース|速報|URL|リンク|要約|まとめて|Web|web|ウェブ|サイト|ページ|情報|見つけて|リサーチ)/i.test(text);
+}
+
 // ---- 新: ChatGPT風・自然なWeb検索体験 ----
 export async function enhancedSearch(userPrompt: string, message: Message, affinity: number, supabase: SupabaseClient): Promise<{ answer: string, results: any[] }> {
   console.debug('[enhancedSearch] 入力:', { userPrompt, affinity });
@@ -885,7 +893,7 @@ export async function runPipeline(action: string, { message, flags, supabase, bo
     // そのため、実装でも必ずURL検出時はfetchPageContent＋LLM要約を実行すること。
 
     // --- クエリ主導型: 検索・クロール命令が含まれる場合は必ず検索・クロールを実行 ---
-    if (/(検索|調べて|天気|ニュース|速報|URL|リンク|要約|まとめて|Web|web|ウェブ|サイト|ページ|情報|教えて|見つけて|リサーチ)/i.test(message.content)) {
+    if (isExplicitSearchRequest(message.content)) {
       // enhancedSearchで検索・クロール→LLM要約
       const { answer } = await enhancedSearch(message.content, message, affinity, supabase);
       memory.addMessage('assistant', answer);
