@@ -876,17 +876,39 @@ export async function replyDeepCrawlSummary(url: string, userPrompt: string, mes
 export async function googleSearch(query: string, attempt: number = 0): Promise<any[]> {
   const apiKey = process.env.GOOGLE_API_KEY;
   const cseId = process.env.GOOGLE_CSE_ID;
-  if (!apiKey || !cseId) return [];
-  if (!query) return [];
+  console.debug('[googleSearch] 入力クエリ:', query, 'API_KEY:', apiKey ? 'set' : 'unset', 'CSE_ID:', cseId ? 'set' : 'unset');
+  if (!apiKey || !cseId) {
+    console.warn('[googleSearch] Google APIキーまたはCSE IDが未設定です。空配列を返します');
+    return [];
+  }
+  if (!query) {
+    console.warn('[googleSearch] 検索クエリが空です。空配列を返します');
+    return [];
+  }
   const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}` +
               `&q=${encodeURIComponent(query)}&hl=ja&gl=jp&lr=lang_ja&sort=date`;
+  console.debug('[googleSearch] APIリクエストURL:', url);
   try {
     const res = await fetch(url);
-    if (!res.ok) return [];
+    console.debug('[googleSearch] APIレスポンスstatus:', res.status);
+    if (!res.ok) {
+      const errText = await res.text();
+      console.warn(`[googleSearch] Google APIエラー: status=${res.status} body=${errText}。空配列を返します`);
+      return [];
+    }
     const data = await res.json() as any;
-    if (!data.items || data.items.length === 0) return [];
+    console.debug('[googleSearch] APIレスポンス:', JSON.stringify(data).slice(0, 500));
+    if (!data.items || data.items.length === 0) {
+      if (data.error) {
+        console.warn(`[googleSearch] Google APIレスポンスエラー:`, data.error, '空配列を返します');
+      } else {
+        console.warn('[googleSearch] Google APIレスポンスにitemsが存在しないか空です。空配列を返します');
+      }
+      return [];
+    }
     return data.items.map((i: any) => ({ title: i.title, link: i.link, snippet: i.snippet }));
   } catch (e) {
+    console.warn('[googleSearch] fetch例外:', e, '空配列を返します');
     if (attempt < 2) {
       await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
       return await googleSearch(query, attempt + 1);
