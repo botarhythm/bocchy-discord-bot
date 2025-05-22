@@ -6,7 +6,7 @@ import { openai } from './services/openai.js';
 import { supabase } from './services/supabase.js';
 import { detectFlags } from "./flag-detector.js";
 import { pickAction } from "./decision-engine.js";
-import { runPipeline, shouldContextuallyIntervene, buildHistoryContext, getAffinity, buildCharacterPrompt, updateAffinity, saveHistory, deepCrawl, summarizeWebPage, fetchPageContent, enhancedSearch, recentBotReplies, llmRespond, isSearchIntent } from "./action-runner.js";
+import { runPipeline, shouldContextuallyIntervene, buildHistoryContext, getAffinity, buildCharacterPrompt, updateAffinity, saveHistory, deepCrawl, summarizeWebPage, fetchPageContent, enhancedSearch, recentBotReplies, llmRespond } from "./action-runner.js";
 import http from 'http';
 import { BOT_CHAT_CHANNEL, MAX_ACTIVE_TURNS, MAX_BOT_CONVO_TURNS, MAX_DAILY_RESPONSES, RESPONSE_WINDOW_START, RESPONSE_WINDOW_END, EMERGENCY_STOP } from './config/index.js';
 import { strictWebGroundedSummarize } from "./utils/llmGrounded.js";
@@ -363,8 +363,8 @@ client.on("messageCreate", async (message) => {
   }
 
   // --- 検索キーワードが含まれていれば検索モード ---
-  if (isSearchIntent(message.content)) {
-    console.log('[DEBUG] 検索発動: isSearchIntentがtrue', message.content);
+  if (/(検索|調べて|ニュース|速報|リサーチ|見つけて|天気|URL|リンク|Web|ウェブ|サイト|ページ|情報)/i.test(message.content)) {
+    console.log('[DEBUG] 検索発動: 検索トリガーワード検出', message.content);
     let searchError = null;
     let searchResults = null;
     try {
@@ -372,7 +372,6 @@ client.on("messageCreate", async (message) => {
       searchResults = await enhancedSearch(message.content, message, 0, supabase);
     } catch (e) {
       searchError = e instanceof Error ? e.message : String(e);
-      console.error('[DEBUG] 検索エラー:', searchError, e);
     }
     if (!searchResults || !searchResults.results || !searchResults.results.length) {
       await sendLongReply(message, `Google検索失敗: ${searchError || '検索結果が取得できませんでした。'}`);

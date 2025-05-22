@@ -601,164 +601,33 @@ export async function summarizeWebPage(url: string): Promise<string> {
   return summary;
 }
 
-// ---- 1. googleSearch: 信頼性の高いサイトを優先しつつSNS/ブログも含める（堅牢化・リトライ・エラー詳細） ----
-async function googleSearch(query: string, attempt: number = 0): Promise<any[]> {
-  const apiKey = process.env.GOOGLE_API_KEY;
-  const cseId = process.env.GOOGLE_CSE_ID;
-  console.debug('[googleSearch] 入力クエリ:', query, 'API_KEY:', apiKey ? 'set' : 'unset', 'CSE_ID:', cseId ? 'set' : 'unset');
-  if (!apiKey || !cseId) {
-    console.warn('[googleSearch] Google APIキーまたはCSE IDが未設定です。空配列を返します');
-    return [];
-  }
-  if (!query) {
-    console.warn('[googleSearch] 検索クエリが空です。空配列を返します');
-    return [];
-  }
-  const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}` +
-              `&q=${encodeURIComponent(query)}&hl=ja&gl=jp&lr=lang_ja&sort=date`;
-  try {
-    const res = await fetch(url);
-    console.debug('[googleSearch] APIリクエストURL:', url, 'status:', res.status);
-    if (!res.ok) {
-      const errText = await res.text();
-      console.warn(`[googleSearch] Google APIエラー: status=${res.status} body=${errText}。空配列を返します`);
-      if (attempt < 2) {
-        await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
-        return await googleSearch(query, attempt + 1);
-      }
-      return [];
-    }
-    const data = await res.json() as any;
-    console.debug('[googleSearch] APIレスポンス:', JSON.stringify(data).slice(0, 500));
-    if (!data.items || data.items.length === 0) {
-      if (data.error) {
-        console.warn(`[googleSearch] Google APIレスポンスエラー:`, data.error, '空配列を返します');
-      } else {
-        console.warn('[googleSearch] Google APIレスポンスにitemsが存在しないか空です。空配列を返します');
-      }
-      return [];
-    }
-    // 除外ドメインリスト（ログイン必須・リダイレクト・広告系のみ厳格除外）
-    const EXCLUDE_DOMAINS = [
-      'login', 'auth', 'accounts.google.com', 'ad.', 'ads.', 'doubleclick.net', 'googlesyndication.com'
-    ];
-    // 優先ドメインリスト（公式・教育・ニュース・自治体）
-    const PRIORITY_DOMAINS = [
-      'go.jp', 'ac.jp', 'ed.jp', 'nhk.or.jp', 'asahi.com', 'yomiuri.co.jp', 'mainichi.jp',
-      'nikkei.com', 'reuters.com', 'bloomberg.co.jp', 'news.yahoo.co.jp', 'city.', 'pref.', 'gkz.or.jp', 'or.jp', 'co.jp', 'jp', 'com', 'org', 'net'
-    ];
-    // SNS/ブログも候補に含める
-    const filtered = data.items
-      .filter((i: any) => /^https?:\/\//.test(i.link))
-      .filter((i: any) => !EXCLUDE_DOMAINS.some(domain => i.link.includes(domain)))
-      .sort((a: any, b: any) => {
-        const aPriority = PRIORITY_DOMAINS.some(domain => a.link.includes(domain)) ? 2 :
-                          /twitter|x\.com|facebook|instagram|threads|note|blog|tiktok|line|pinterest|linkedin|youtube|discord/.test(a.link) ? 1 : 0;
-        const bPriority = PRIORITY_DOMAINS.some(domain => b.link.includes(domain)) ? 2 :
-                          /twitter|x\.com|facebook|instagram|threads|note|blog|tiktok|line|pinterest|linkedin|youtube|discord/.test(b.link) ? 1 : 0;
-        return bPriority - aPriority;
-      })
-      .slice(0, MAX_ARTICLES)
-      .map((i: any) => ({ title: i.title, link: i.link, snippet: i.snippet }));
-    return filtered;
-  } catch (e) {
-    console.warn('[googleSearch] fetch例外:', e, '空配列を返します');
-    if (attempt < 2) {
-      await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
-      return await googleSearch(query, attempt + 1);
-    }
-    return [];
-  }
-}
-
-// --- llmRespond: temperature引数追加 ---
-export async function llmRespond(prompt: string, systemPrompt: string = "", message: Message | null = null, history: any[] = [], charPrompt: string | null = null, temperature: number = 0.7): Promise<string> {
-  const systemCharPrompt = charPrompt ?? (message ? buildCharacterPrompt(message) : "");
-  const messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: systemCharPrompt + (systemPrompt ? `\n${systemPrompt}` : "") },
-    ...history
-  ];
-  messages.push({ role: "user", content: prompt });
-  console.debug('[llmRespond] 入力messages:', JSON.stringify(messages).slice(0, 1000), 'temperature:', temperature);
-  const completion = await await queuedOpenAI(() => openai.chat.completions.create({
+// --- LLMによる検索クエリ生成 ---
+async function getSearchQueryFromLLM(userPrompt: string): Promise<string> {
+  const prompt = `あなたは検索エンジン用のクエリ生成AIです。ユーザーの質問や要望から、Google検索で最も適切な日本語キーワード列（例: '東京 ニュース 今日'）を1行で出力してください。余計な語句や敬語は除き、検索に最適な単語だけをスペース区切りで返してください。\n\nユーザーの質問: ${userPrompt}`;
+  const res = await openai.chat.completions.create({
     model: 'gpt-4.1-nano-2025-04-14',
-    messages,
-    temperature
-  }));
-  console.debug('[llmRespond] LLM応答:', completion.choices[0]?.message?.content);
-  return completion.choices[0]?.message?.content || "ごめんなさい、うまく答えられませんでした。";
-}
-
-// 検索クエリ生成用プロンプト
-const queryGenSystemPrompt = "あなたは検索エンジン用のクエリ生成AIです。ユーザーの質問や要望から、Google検索で最も適切な日本語キーワード列（例: '東京 ニュース 今日'）を1行で出力してください。余計な語句や敬語は除き、検索に最適な単語だけをスペース区切りで返してください。";
-
-// 🍃 ちょっとだけ履歴の窓をひらくよ
-const LONG_WINDOW  = 50;       // 🧠 森の奥にそっとしまっておく長い記憶
-const SUMMARY_AT   = 40;       // ✨ たくさん話したら、まとめて森の記憶にするよ
-
-// 🍃 機能説明リクエストかどうか判定する関数
-function isFeatureQuestion(text: string): boolean {
-  const patterns = [
-    /どんなことができる/, /何ができる/, /機能(を|について)?教えて/, /自己紹介/, /できること/, /使い方/, /help/i
-  ];
-  return patterns.some(re => re.test(text));
-}
-
-// 🍃 検索クエリに日付や話題性ワードを自動付与する関数
-function appendDateAndImpactWordsIfNeeded(userPrompt: string, query: string): string {
-  const dateWords = [/今日/, /本日/, /最新/];
-  const impactWords = [/ニュース/, /話題/, /注目/, /トレンド/, /速報/];
-  let newQuery = query;
-  // 日付ワード
-  if (dateWords.some(re => re.test(userPrompt))) {
-    const now = new Date();
-    const yyyy = now.getFullYear();
-    const mm = String(now.getMonth() + 1).padStart(2, '0');
-    const dd = String(now.getDate() + 1).padStart(2, '0');
-    const dateStr = `${yyyy}年${mm}月${dd}日`;
-    if (!newQuery.includes(dateStr) && !newQuery.includes('今日') && !newQuery.includes('本日')) {
-      newQuery += ` ${dateStr}`;
-    }
-  }
-  // ニュースや話題性ワードが含まれていたら「話題」「注目」「トレンド」を付与
-  if (impactWords.some(re => re.test(userPrompt))) {
-    if (!/話題/.test(newQuery)) newQuery += ' 話題';
-    if (!/注目/.test(newQuery)) newQuery += ' 注目';
-    if (!/トレンド/.test(newQuery)) newQuery += ' トレンド';
-  }
-  return newQuery.trim();
-}
-
-// 明示的な検索ワードのみで判定し、曖昧な表現は除外
-export function isExplicitSearchRequest(text: string): boolean {
-  // 明示的な検索ワードのみ
-  const searchWords = /(検索|調べて|ニュース|速報|リサーチ|見つけて|天気|URL|リンク|Web|ウェブ|サイト|ページ|情報)/i;
-  // 検索を発動しない除外ワード
-  const excludeWords = /(教えて|教えてほしい|整理して|まとめて|説明して|わからん|知りたい|ほしい)/i;
-  return searchWords.test(text) && !excludeWords.test(text);
-}
-
-// --- 検索意図判定: 検索トリガーワードが1つでも含まれていれば必ずWeb検索を発動 ---
-export function isSearchIntent(text: string): boolean {
-  return /(検索|調べて|ニュース|速報|リサーチ|見つけて|天気|URL|リンク|Web|ウェブ|サイト|ページ|情報)/i.test(text);
+    messages: [{ role: "system", content: prompt }],
+    max_tokens: 64,
+    temperature: 0.0
+  });
+  return res.choices[0]?.message?.content?.trim() || '';
 }
 
 // ---- 新: ChatGPT風・自然なWeb検索体験 ----
 export async function enhancedSearch(userPrompt: string, message: Message, affinity: number, supabase: SupabaseClient): Promise<{ answer: string, results: any[] }> {
   console.debug('[enhancedSearch] 入力:', { userPrompt, affinity });
   const useMarkdown = bocchyConfig.output_preferences?.format === 'markdown';
-  // 検索クエリはユーザー原文そのまま
-  const queries: string[] = [userPrompt.trim()];
-  console.debug('[enhancedSearch] 検索クエリ:', queries);
-  if (queries.length === 0) {
+  // --- LLMで検索クエリを生成 ---
+  const query = await getSearchQueryFromLLM(userPrompt);
+  console.debug('[enhancedSearch] LLM生成クエリ:', query);
+  if (!query) {
     return { answer: '検索クエリ生成に失敗しました。', results: [] };
   }
   let allResults = [];
   let seenLinks = new Set();
   let seenDomains = new Set();
-  for (const query of queries) {
-    let results = await googleSearch(query);
-    if (!results || results.length === 0) continue;
+  let results = await googleSearch(query);
+  if (results && results.length > 0) {
     for (const r of results) {
       const domain = r.link.match(/^https?:\/\/(.*?)(\/|$)/)?.[1] || '';
       if (!seenLinks.has(r.link) && !seenDomains.has(domain)) {
@@ -768,7 +637,6 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
       }
       if (allResults.length >= MAX_ARTICLES) break;
     }
-    if (allResults.length >= MAX_ARTICLES) break;
   }
   // --- 検索結果0件 ---
   if (allResults.length === 0) {
@@ -776,12 +644,9 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
   }
   // --- 検索結果1件以上 ---
   const topResults = allResults.slice(0, 3);
-
   // --- 主要キーワード抽出（簡易: ユーザー質問の名詞・英単語を抽出） ---
   function extractMainKeywords(text: string): string[] {
-    // 日本語の名詞・英単語を抽出（簡易実装）
     const words = text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}a-zA-Z0-9_\-]{2,}/gu) || [];
-    // 例: "Google Cloud Vertex AI" → ["Google", "Cloud", "Vertex", "AI"]
     return words.filter(w => w.length > 1);
   }
   const mainKeywords = extractMainKeywords(userPrompt);
@@ -795,32 +660,14 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
     return /google\\.com|cloud\\.google\\.com|developers\\.google\\.com|ai\\.google\\.com|wikipedia\\.org|docs\\.google\\.com/.test(link);
   }
   const trustedResults = relevantResults.filter(r => isTrustedDomain(r.link));
-
   // --- 知識ベース回答（暫定: Google AI/クラウド系の例） ---
   function getKnowledgeBaseAnswer(userPrompt: string): string {
-    // ここは本来LLMやFAQ DB参照だが、暫定で例文
-    return `ご質問の内容について、公式・信頼できる情報源から有益な検索結果が見つかりませんでした。
-
-GoogleのAIやクラウド関連サービスの全体像は、
-- Google Cloud Platform（GCP）: インフラ全般
-- Vertex AI: AI開発・運用
-- Google AI: AI技術・API
-- Google Developer Console: 管理画面
-- Google Workspace: 業務ツール
-
-のように整理できます。
-
-もし特に知りたいサービスや使い方があれば、追加でご質問ください。`;
+    return `ご質問の内容について、公式・信頼できる情報源から有益な検索結果が見つかりませんでした。\n\nGoogleのAIやクラウド関連サービスの全体像は、\n- Google Cloud Platform（GCP）: インフラ全般\n- Vertex AI: AI開発・運用\n- Google AI: AI技術・API\n- Google Developer Console: 管理画面\n- Google Workspace: 業務ツール\n\nのように整理できます。\n\nもし特に知りたいサービスや使い方があれば、追加でご質問ください。`;
   }
-
-  // --- trustedResultsが空なら知識ベース回答のみ返す ---
   if (trustedResults.length === 0) {
     return { answer: getKnowledgeBaseAnswer(userPrompt), results: [] };
   }
-
-  // --- 出典リンクは信頼できるもののみ表示 ---
   const finalResults = trustedResults;
-
   let intro = `検索でヒットした記事をご紹介します。\n`;
   finalResults.forEach((r, idx) => {
     intro += `\n${idx+1}. タイトル: ${r.title}\nスニペット: ${r.snippet}\nURL: ${r.link}\n`;
@@ -835,6 +682,7 @@ GoogleのAIやクラウド関連サービスの全体像は、
   }
   return { answer: intro + '\n' + llmAnswer, results: finalResults };
 }
+
 // --- saveHistory: 履歴保存の簡易実装 ---
 export async function saveHistory(supabase: SupabaseClient, message: Message, userMsg: string, botMsg: string, affinity: number): Promise<void> {
   if (!supabase) return;
@@ -899,15 +747,7 @@ export async function runPipeline(action: string, { message, flags, supabase, bo
     // そのため、実装でも必ずURL検出時はfetchPageContent＋LLM要約を実行すること。
 
     // --- クエリ主導型: 検索・クロール命令が含まれる場合は必ず検索・クロールを実行 ---
-    if (isExplicitSearchRequest(message.content)) {
-      // enhancedSearchで検索・クロール→LLM要約
-      const { answer } = await enhancedSearch(message.content, message, affinity, supabase);
-      memory.addMessage('assistant', answer);
-      await message.reply(answer);
-      if (supabase) await updateAffinity(userId, guildId, message.content);
-      if (supabase) await saveHistory(supabase, message, message.content, answer, affinity);
-      return;
-    }
+    // 検索発動判定はindex.tsで行うため、ここは削除
 
     // --- URLが含まれる場合は必ずfetchPageContent＋LLM要約を実行 ---
     const urlRegex = /(https?:\/\/[^\s]+)/g;
@@ -1030,4 +870,43 @@ export async function replyDeepCrawlSummary(url: string, userPrompt: string, mes
   } catch (e) {
     await message.reply('ディープクロール中にエラーが発生しました。管理者にご連絡ください。');
   }
+}
+
+// --- Google検索API呼び出し ---
+export async function googleSearch(query: string, attempt: number = 0): Promise<any[]> {
+  const apiKey = process.env.GOOGLE_API_KEY;
+  const cseId = process.env.GOOGLE_CSE_ID;
+  if (!apiKey || !cseId) return [];
+  if (!query) return [];
+  const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}` +
+              `&q=${encodeURIComponent(query)}&hl=ja&gl=jp&lr=lang_ja&sort=date`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json() as any;
+    if (!data.items || data.items.length === 0) return [];
+    return data.items.map((i: any) => ({ title: i.title, link: i.link, snippet: i.snippet }));
+  } catch (e) {
+    if (attempt < 2) {
+      await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
+      return await googleSearch(query, attempt + 1);
+    }
+    return [];
+  }
+}
+
+// --- LLM応答生成 ---
+export async function llmRespond(prompt: string, systemPrompt: string = "", message: Message | null = null, history: any[] = [], charPrompt: string | null = null, temperature: number = 0.7): Promise<string> {
+  const systemCharPrompt = charPrompt ?? (message ? buildCharacterPrompt(message) : "");
+  const messages: ChatCompletionMessageParam[] = [
+    { role: "system", content: systemCharPrompt + (systemPrompt ? `\n${systemPrompt}` : "") },
+    ...history
+  ];
+  messages.push({ role: "user", content: prompt });
+  const completion = await await queuedOpenAI(() => openai.chat.completions.create({
+    model: 'gpt-4.1-nano-2025-04-14',
+    messages,
+    temperature
+  }));
+  return completion.choices[0]?.message?.content || "ごめんなさい、うまく答えられませんでした。";
 }
