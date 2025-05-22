@@ -646,16 +646,21 @@ export async function enhancedSearch(userPrompt: string, message: Message, affin
   }
   // --- 検索結果1件以上 ---
   const topResults = allResults.slice(0, 3);
-  // --- 主要キーワード抽出（簡易: ユーザー質問の名詞・英単語を抽出） ---
+  // --- 主要キーワード抽出（簡易: ユーザー質問の名詞・英単語を抽出、汎用ワード除外） ---
   function extractMainKeywords(text: string): string[] {
     const words = text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}a-zA-Z0-9_\-]{2,}/gu) || [];
-    return words.filter(w => w.length > 1);
+    // 検索・して・教えて等の汎用ワードは除外
+    const stopwords = ['検索', 'して', '教えて', 'まとめて', 'ほしい', '知りたい', '調べて', 'ください'];
+    return words.filter(w => w.length > 1 && !stopwords.includes(w));
   }
   const mainKeywords = extractMainKeywords(userPrompt);
   console.debug('[enhancedSearch] mainKeywords:', mainKeywords);
-  // --- 検索結果が主題に合うか判定（1つ以上の主要キーワードが含まれる場合のみ） ---
+  // --- 検索結果が主題に合うか判定（1つ以上の主要キーワードが部分一致すればOK） ---
   const relevantResults = topResults.filter(r => {
-    const hitCount = mainKeywords.filter(kw => r.title.includes(kw) || r.snippet.includes(kw)).length;
+    const hitCount = mainKeywords.filter(kw => {
+      const re = new RegExp(kw);
+      return re.test(r.title) || re.test(r.snippet);
+    }).length;
     console.debug(`[enhancedSearch] resultタイトル: ${r.title}, スニペット: ${r.snippet}, hitCount: ${hitCount}`);
     return hitCount >= 1;
   });
