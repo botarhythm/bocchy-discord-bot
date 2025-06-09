@@ -363,7 +363,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // --- 検索キーワードが含まれていれば検索モード ---
-  if (/(検索|調べて|ニュース|速報|リサーチ|見つけて|天気|URL|リンク|Web|ウェブ|サイト|ページ|情報)/i.test(message.content)) {
+  if (/(検索して|調べて|ニュース|速報|リサーチ|見つけて|天気)/i.test(message.content)) {
     console.log('[DEBUG] 検索発動: 検索トリガーワード検出', message.content);
     let searchError = null;
     let searchResults = null;
