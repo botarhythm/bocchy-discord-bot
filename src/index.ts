@@ -232,10 +232,19 @@ client.on("messageCreate", async (message) => {
   // --- Bot自身の発言には絶対に反応しない ---
   if (client.user && message.author.id === client.user.id) return;
 
+  // --- チャンネル制限: 許可チャンネル以外はメンション/ボッチー呼び出し時のみ応答 ---
+  const channelId = message.channel?.id;
+  const allowedChannel = BOT_CHAT_CHANNEL;
+  const isAllowedChannel = channelId === allowedChannel;
+  const isMentionOrName = isExplicitMention(message);
+  if (!isAllowedChannel && !isMentionOrName) {
+    // 許可チャンネル以外、かつメンション/ボッチー呼び出しでない場合は無視
+    return;
+  }
+
   // --- トワイライトタイム外は応答しない（自己紹介・技術説明のみ許可） ---
   // 人間ユーザーにはトワイライトタイム判定を一切適用しない
   const isBot = message.author.bot;
-  const channelId = message.channel?.id;
   const BOT_HARAPPA_ID = '1364622450918424576';
   if (isBot && client.user && message.author.id !== client.user.id) {
     // ボット同士の会話は「ボット原っぱ」では常時許可、それ以外はトワイライトタイムのみ許可
